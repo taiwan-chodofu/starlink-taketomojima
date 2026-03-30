@@ -1,17 +1,16 @@
 """
 竹富島・西桟橋 スターリンク トレイン ビューワー
-
-観測地点: 西桟橋（竹富島） 24.3237°N, 124.0893°E
-対象時間: 18:00〜21:00 JST
-条件: 高度30°以上、薄明中（太陽 -6°〜-18°）
+v3: ファイルキャッシュ + タイムアウト延長 + フォールバック強化
 """
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from skyfield.api import load, EarthSatellite, wgs84
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import httpx
 import logging
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,9 +26,8 @@ TLE_URLS = [
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
     "https://www.celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
-    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100&format=text",
 ]
-
+TLE_CACHE_FILE = Path(__file__).parent / "tle_cache.json"
 TLE_CACHE_MINUTES = 120
 MIN_ALT_DEG = 30.0
 OBS_START_HOUR = 18
@@ -42,7 +40,6 @@ ts = load.timescale()
 eph = load('de421.bsp')
 _tle_cache = {"data": None, "fetched_at": None}
 
-# --- 方角 ---
 DIRECTION_NAMES = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"]
 DIRECTION_CONTEXT = {
     "北": "島の奥側", "北東": "島の上空", "東": "石垣島の方向",
@@ -59,9 +56,43 @@ def az_to_context(az_deg: float) -> str:
     return DIRECTION_CONTEXT.get(az_to_direction(az_deg), "")
 
 
-# --- TLE取得 ---
+# --- TLE取得（ファイルキャッシュ付き） ---
+def _load_file_cache() -> list[tuple[str, str, str]] | None:
+    """ファイルキャッシュからTLEデータを読み込む。"""
+    if not TLE_CACHE_FILE.exists():
+        return None
+    try:
+        data = json.loads(TLE_CACHE_FILE.read_text(encoding="utf-8"))
+        cached_at = datetime.fromisoformat(data["fetched_at"])
+        age_hours = (datetime.now(tz=JST) - cached_at).total_seconds() / 3600
+        logger.info("ファイルキャッシュ発見: %d衛星, %.1f時間前", len(data["sats"]), age_hours)
+        # 24時間以内なら使用可能（TLEは1日程度は有効）
+        if age_hours <= 24:
+            return [tuple(s) for s in data["sats"]]
+        logger.info("ファイルキャッシュ期限切れ（%.1f時間）", age_hours)
+    except Exception as e:
+        logger.warning("ファイルキャッシュ読み込み失敗: %s", e)
+    return None
+
+
+def _save_file_cache(sats: list[tuple[str, str, str]]) -> None:
+    """TLEデータをファイルキャッシュに保存する。"""
+    try:
+        data = {
+            "fetched_at": datetime.now(tz=JST).isoformat(),
+            "sats": sats,
+        }
+        TLE_CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        logger.info("ファイルキャッシュ保存: %d衛星", len(sats))
+    except Exception as e:
+        logger.warning("ファイルキャッシュ保存失敗: %s", e)
+
+
 async def fetch_tle_data() -> list[tuple[str, str, str]]:
+    """TLEデータを取得する。メモリキャッシュ → ネットワーク → ファイルキャッシュの順。"""
     now = datetime.now(tz=JST)
+
+    # 1. メモリキャッシュ
     if (
         _tle_cache["data"] is not None
         and _tle_cache["fetched_at"] is not None
@@ -69,37 +100,44 @@ async def fetch_tle_data() -> list[tuple[str, str, str]]:
     ):
         return _tle_cache["data"]
 
-    headers = {"User-Agent": "StarlinkNishi/1.0 (satellite-viewer)"}
-    last_error = None
-    async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
+    # 2. ネットワーク取得（タイムアウト60秒）
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; StarlinkNishi/1.0)"}
+    async with httpx.AsyncClient(timeout=60.0, headers=headers, follow_redirects=True) as client:
         for url in TLE_URLS:
             try:
+                logger.info("TLE取得試行: %s", url)
                 resp = await client.get(url)
                 resp.raise_for_status()
-                break
-            except (httpx.HTTPError, httpx.TimeoutException) as e:
-                last_error = e
-                continue
-        else:
-            raise last_error or RuntimeError("TLE取得失敗")
+                lines = resp.text.strip().splitlines()
+                sats = []
+                for i in range(0, len(lines) - 2, 3):
+                    name = lines[i].strip()
+                    l1, l2 = lines[i+1].strip(), lines[i+2].strip()
+                    if l1.startswith("1 ") and l2.startswith("2 "):
+                        sats.append((name, l1, l2))
+                if sats:
+                    _tle_cache["data"] = sats
+                    _tle_cache["fetched_at"] = now
+                    _save_file_cache(sats)
+                    logger.info("TLE取得成功: %d衛星 from %s", len(sats), url)
+                    return sats
+            except Exception as e:
+                logger.warning("TLE取得失敗(%s): %s", url, e)
 
-    lines = resp.text.strip().splitlines()
-    sats = []
-    for i in range(0, len(lines) - 2, 3):
-        name, l1, l2 = lines[i].strip(), lines[i+1].strip(), lines[i+2].strip()
-        if l1.startswith("1 ") and l2.startswith("2 "):
-            sats.append((name, l1, l2))
+    # 3. ファイルキャッシュにフォールバック
+    logger.info("ネットワーク取得失敗、ファイルキャッシュを試行")
+    cached = _load_file_cache()
+    if cached:
+        _tle_cache["data"] = cached
+        _tle_cache["fetched_at"] = now
+        return cached
 
-    _tle_cache["data"] = sats
-    _tle_cache["fetched_at"] = now
-    return sats
+    raise RuntimeError("TLEデータを取得できません")
 
 
 # --- 薄明・パス計算 ---
 def is_observable_twilight(t_sf) -> bool:
-    sun = eph['sun']
-    earth = eph['earth']
-    alt, _, _ = (earth + OBSERVER).at(t_sf).observe(sun).apparent().altaz()
+    alt, _, _ = (eph['earth'] + OBSERVER).at(t_sf).observe(eph['sun']).apparent().altaz()
     return -18.0 <= alt.degrees <= -6.0
 
 
@@ -111,13 +149,10 @@ def compute_pass(sat: EarthSatellite, t_sf) -> dict | None:
 
 
 def find_train_passes(sats_tle, obs_start, obs_end):
-    passes = []
-    time_steps = []
-    current = obs_start
+    passes, time_steps, current = [], [], obs_start
     while current <= obs_end:
         time_steps.append(current)
         current += timedelta(minutes=1)
-
     for name, l1, l2 in sats_tle:
         try:
             sat = EarthSatellite(l1, l2, name, ts)
@@ -168,8 +203,8 @@ def select_best_train(trains):
     }
 
 
-# --- HTML（テンプレートファイル不要） ---
-def render_html(target_date: str, result=None, error_msg=None) -> str:
+# --- HTML ---
+def render_html(target_date, result=None, error_msg=None) -> str:
     if error_msg:
         content = f'<div class="error"><div class="status">{error_msg}</div></div>'
     elif result:
@@ -186,8 +221,7 @@ def render_html(target_date: str, result=None, error_msg=None) -> str:
         content = '<div class="not-visible"><div class="status">今夜は<br>見えなそうです</div></div>'
 
     return f"""<!DOCTYPE html>
-<html lang="ja">
-<head>
+<html lang="ja"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -211,15 +245,12 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .error .status{{font-size:1rem;color:rgba(255,100,100,.6)}}
 .footer{{position:fixed;bottom:1.5rem;font-size:.7rem;color:rgba(255,255,255,.15);letter-spacing:.1em}}
 @media(min-width:600px){{.visible .time{{font-size:5.5rem}}.visible .direction{{font-size:1.5rem}}}}
-</style>
-</head>
-<body>
+</style></head><body>
 <div class="place">竹富島・西桟橋</div>
 <div class="date">{target_date}</div>
 {content}
 <div class="footer">Starlink Train Viewer</div>
-</body>
-</html>"""
+</body></html>"""
 
 
 # --- エンドポイント ---
@@ -267,3 +298,14 @@ async def api_tonight():
                 "direction": f"{result['start_dir']}（{result['start_context']}）→ {result['end_dir']}",
                 "satellite_count": result["sat_count"]}
     return {"visible": False}
+
+
+# --- 起動時にTLEプリフェッチ ---
+@app.on_event("startup")
+async def startup_prefetch():
+    """アプリ起動時にTLEデータを事前取得する。"""
+    try:
+        sats = await fetch_tle_data()
+        logger.info("起動時TLEプリフェッチ完了: %d衛星", len(sats))
+    except Exception as e:
+        logger.warning("起動時TLEプリフェッチ失敗: %s", e)
