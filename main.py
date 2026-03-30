@@ -23,10 +23,9 @@ LON = 124.0893
 OBSERVER = wgs84.latlon(LAT, LON)
 JST = timezone(timedelta(hours=9))
 TLE_URLS = [
-    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100&format=text",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
-    "https://www.celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
 ]
 TLE_CACHE_FILE = Path(__file__).parent / "tle_cache.json"
 TLE_CACHE_MINUTES = 120
@@ -89,6 +88,32 @@ def _save_file_cache(sats: list[tuple[str, str, str]]) -> None:
         logger.warning("ファイルキャッシュ保存失敗: %s", e)
 
 
+def _parse_tle_response(text: str, url: str) -> list[tuple[str, str, str]]:
+    """TLEレスポンスをパースする。JSON（TLE API）と3行TLE（Celestrak）の両方に対応。"""
+    sats = []
+    # JSON形式（tle.ivanstanojevic.me）
+    if "ivanstanojevic" in url or text.strip().startswith("{"):
+        try:
+            data = json.loads(text)
+            for member in data.get("member", []):
+                name = member.get("name", "")
+                l1 = member.get("line1", "")
+                l2 = member.get("line2", "")
+                if l1.startswith("1 ") and l2.startswith("2 "):
+                    sats.append((name, l1, l2))
+        except json.JSONDecodeError:
+            pass
+    # 3行TLE形式（Celestrak）
+    if not sats:
+        lines = text.strip().splitlines()
+        for i in range(0, len(lines) - 2, 3):
+            name = lines[i].strip()
+            l1, l2 = lines[i+1].strip(), lines[i+2].strip()
+            if l1.startswith("1 ") and l2.startswith("2 "):
+                sats.append((name, l1, l2))
+    return sats
+
+
 async def fetch_tle_data() -> list[tuple[str, str, str]]:
     """TLEデータを取得する。メモリキャッシュ → ネットワーク → ファイルキャッシュの順。"""
     now = datetime.now(tz=JST)
@@ -109,13 +134,7 @@ async def fetch_tle_data() -> list[tuple[str, str, str]]:
                 logger.info("TLE取得試行: %s", url)
                 resp = await client.get(url)
                 resp.raise_for_status()
-                lines = resp.text.strip().splitlines()
-                sats = []
-                for i in range(0, len(lines) - 2, 3):
-                    name = lines[i].strip()
-                    l1, l2 = lines[i+1].strip(), lines[i+2].strip()
-                    if l1.startswith("1 ") and l2.startswith("2 "):
-                        sats.append((name, l1, l2))
+                sats = _parse_tle_response(resp.text, url)
                 if sats:
                     _tle_cache["data"] = sats
                     _tle_cache["fetched_at"] = now
