@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.bsp
+.env
+test_mock.py
+test_integration.py
