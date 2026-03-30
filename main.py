@@ -27,7 +27,9 @@ TLE_URLS = [
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
     "https://www.celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100&format=text",
 ]
+
 TLE_CACHE_MINUTES = 120
 MIN_ALT_DEG = 30.0
 OBS_START_HOUR = 18
@@ -69,7 +71,7 @@ async def fetch_tle_data() -> list[tuple[str, str, str]]:
 
     headers = {"User-Agent": "StarlinkNishi/1.0 (satellite-viewer)"}
     last_error = None
-    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
         for url in TLE_URLS:
             try:
                 resp = await client.get(url)
