@@ -23,7 +23,7 @@ LON = 124.0893
 OBSERVER = wgs84.latlon(LAT, LON)
 JST = timezone(timedelta(hours=9))
 TLE_URLS = [
-    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page-size=100&sort=popularity&sort-dir=desc",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
 ]
@@ -223,8 +223,44 @@ def select_best_train(trains):
     }
 
 
+def find_next_visible(sats_tle, start_date, max_days=3) -> dict | None:
+    """今夜以降max_days日分をスキャンし、最初に可視パスが見つかった日の情報を返す。"""
+    for day_offset in range(max_days):
+        target = start_date + timedelta(days=day_offset)
+        obs_start = datetime(target.year, target.month, target.day,
+                             OBS_START_HOUR, 0, tzinfo=JST)
+        obs_end = datetime(target.year, target.month, target.day,
+                           OBS_END_HOUR, 0, tzinfo=JST)
+        # 粗いスキャン（5分間隔）で高速化
+        passes = []
+        time_steps = []
+        current = obs_start
+        while current <= obs_end:
+            time_steps.append(current)
+            current += timedelta(minutes=5)
+        for name, l1, l2 in sats_tle:
+            try:
+                sat = EarthSatellite(l1, l2, name, ts)
+            except Exception:
+                continue
+            for t in time_steps:
+                t_sf = ts.from_datetime(t)
+                if not is_observable_twilight(t_sf):
+                    continue
+                result = compute_pass(sat, t_sf)
+                if result:
+                    passes.append({"name": name, "time": t, **result})
+                    break
+        trains = cluster_into_trains(passes)
+        best = select_best_train(trains)
+        if best:
+            date_str = target.strftime("%-m/%-d")
+            return {"date": date_str, **best}
+    return None
+
+
 # --- HTML ---
-def render_html(target_date, result=None, error_msg=None) -> str:
+def render_html(target_date, result=None, error_msg=None, next_visible=None) -> str:
     if error_msg:
         content = f'<div class="error"><div class="status">{error_msg}</div></div>'
     elif result:
@@ -239,6 +275,15 @@ def render_html(target_date, result=None, error_msg=None) -> str:
 </div>"""
     else:
         content = '<div class="not-visible"><div class="status">今夜は<br>見えなそうです</div></div>'
+
+    # 次の候補
+    next_html = ""
+    if next_visible and not result:
+        next_html = f"""<div class="next-hint">
+  <div class="next-label">次の候補</div>
+  <div class="next-date">{next_visible['date']} {next_visible['time_str']}</div>
+  <div class="next-dir">{next_visible['start_dir']}（{next_visible['start_context']}）→ {next_visible['end_dir']}</div>
+</div>"""
 
     return f"""<!DOCTYPE html>
 <html lang="ja"><head>
@@ -263,12 +308,17 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .visible .count{{font-size:.8rem;color:rgba(255,255,255,.25);margin-top:3rem}}
 .not-visible .status{{font-size:1.3rem;color:rgba(255,255,255,.5);line-height:1.8}}
 .error .status{{font-size:1rem;color:rgba(255,100,100,.6)}}
+.next-hint{{margin-top:3rem;padding-top:2rem;border-top:1px solid rgba(255,255,255,.08)}}
+.next-label{{font-size:.75rem;color:rgba(255,255,255,.25);letter-spacing:.2em;margin-bottom:.8rem}}
+.next-date{{font-size:1.1rem;color:rgba(255,255,255,.45);margin-bottom:.4rem}}
+.next-dir{{font-size:.85rem;color:rgba(255,255,255,.3)}}
 .footer{{position:fixed;bottom:1.5rem;font-size:.7rem;color:rgba(255,255,255,.15);letter-spacing:.1em}}
 @media(min-width:600px){{.visible .time{{font-size:5.5rem}}.visible .direction{{font-size:1.5rem}}}}
 </style></head><body>
 <div class="place">竹富島・西桟橋</div>
 <div class="date">{target_date}</div>
 {content}
+{next_html}
 <div class="footer">Starlink Train Viewer</div>
 </body></html>"""
 
@@ -284,17 +334,22 @@ async def home():
         obs_start += timedelta(days=1)
         obs_end += timedelta(days=1)
 
-    result, error_msg = None, None
+    result, error_msg, next_visible = None, None, None
     try:
         sats = await fetch_tle_data()
-        passes = find_train_passes(sats[-600:], obs_start, obs_end)
+        recent = sats[-600:] if len(sats) > 600 else sats
+        passes = find_train_passes(recent, obs_start, obs_end)
         trains = cluster_into_trains(passes)
         result = select_best_train(trains)
+        # 今夜見えない場合、翌日以降をスキャン
+        if not result:
+            tomorrow = obs_start.date() + timedelta(days=1)
+            next_visible = find_next_visible(recent, tomorrow, max_days=3)
     except Exception as e:
         logger.error("エラー: %s", e)
         error_msg = "衛星データの取得に失敗しました"
 
-    return render_html(obs_start.strftime("%m/%d"), result, error_msg)
+    return render_html(obs_start.strftime("%m/%d"), result, error_msg, next_visible)
 
 
 @app.get("/api/tonight")
