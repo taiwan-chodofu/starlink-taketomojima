@@ -347,15 +347,17 @@ async def api_tonight():
 # --- Static配信 & PWA ---
 from fastapi.staticfiles import StaticFiles
 
-app.mount("/static", StaticFiles(
-    directory=str(Path(__file__).parent / "static")
-), name="static")
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 @app.get("/manifest.json")
 async def manifest():
     """PWAマニフェストを返す。"""
     manifest_path = Path(__file__).parent / "static" / "manifest.json"
+    if not manifest_path.exists():
+        return HTMLResponse(content="{}", media_type="application/json")
     return HTMLResponse(
         content=manifest_path.read_text(encoding="utf-8"),
         media_type="application/manifest+json",
