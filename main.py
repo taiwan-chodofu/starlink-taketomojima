@@ -1,16 +1,19 @@
 """
 竹富島・西桟橋 スターリンク トレイン ビューワー
-v3: ファイルキャッシュ + タイムアウト延長 + フォールバック強化
+v4: ローディング画面 + 非同期取得 + 計算軽量化 + 月判定改善
 """
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from skyfield.api import load, EarthSatellite, wgs84
+from skyfield import almanac
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import httpx
 import logging
 import json
+import math
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,6 +38,9 @@ OBS_END_HOUR = 21
 TRAIN_CLUSTER_THRESHOLD = 3
 TRAIN_TIME_WINDOW_SEC = 300
 TRAIN_AZ_TOLERANCE_DEG = 30.0
+SCAN_INTERVAL_MIN = 5          # メインスキャン間隔（分）
+NEXT_SCAN_INTERVAL_MIN = 10    # 翌日以降スキャン間隔（分）
+MAX_SATS = 200                 # 計算対象の衛星数上限
 
 ts = load.timescale()
 eph = load('de421.bsp')
@@ -168,20 +174,27 @@ def compute_pass(sat: EarthSatellite, t_sf) -> dict | None:
     return None
 
 
-def find_train_passes(sats_tle, obs_start, obs_end):
+def find_train_passes(sats_tle, obs_start, obs_end, interval_min=None):
+    if interval_min is None:
+        interval_min = SCAN_INTERVAL_MIN
     passes, time_steps, current = [], [], obs_start
     while current <= obs_end:
         time_steps.append(current)
-        current += timedelta(minutes=1)
+        current += timedelta(minutes=interval_min)
+    # 薄明チェックを事前計算してキャッシュ
+    twilight_ok = {}
+    for t in time_steps:
+        t_sf = ts.from_datetime(t)
+        twilight_ok[t] = is_observable_twilight(t_sf)
     for name, l1, l2 in sats_tle:
         try:
             sat = EarthSatellite(l1, l2, name, ts)
         except Exception:
             continue
         for t in time_steps:
-            t_sf = ts.from_datetime(t)
-            if not is_observable_twilight(t_sf):
+            if not twilight_ok[t]:
                 continue
+            t_sf = ts.from_datetime(t)
             result = compute_pass(sat, t_sf)
             if result:
                 passes.append({"name": name, "time": t, **result})
@@ -231,26 +244,8 @@ def find_next_visible(sats_tle, start_date, max_days=3) -> dict | None:
                              OBS_START_HOUR, 0, tzinfo=JST)
         obs_end = datetime(target.year, target.month, target.day,
                            OBS_END_HOUR, 0, tzinfo=JST)
-        # 粗いスキャン（5分間隔）で高速化
-        passes = []
-        time_steps = []
-        current = obs_start
-        while current <= obs_end:
-            time_steps.append(current)
-            current += timedelta(minutes=5)
-        for name, l1, l2 in sats_tle:
-            try:
-                sat = EarthSatellite(l1, l2, name, ts)
-            except Exception:
-                continue
-            for t in time_steps:
-                t_sf = ts.from_datetime(t)
-                if not is_observable_twilight(t_sf):
-                    continue
-                result = compute_pass(sat, t_sf)
-                if result:
-                    passes.append({"name": name, "time": t, **result})
-                    break
+        passes = find_train_passes(sats_tle, obs_start, obs_end,
+                                   interval_min=NEXT_SCAN_INTERVAL_MIN)
         trains = cluster_into_trains(passes)
         best = select_best_train(trains)
         if best:
@@ -272,45 +267,40 @@ TIDE_TYPES = {
 
 
 def get_moon_info(target_date) -> dict:
-    """月齢・月相・潮の種類を計算する。"""
-    t_midnight = ts.from_datetime(
+    """月齢・月相・潮の種類を計算する（skyfield.almanac使用）。"""
+    t_obs = ts.from_datetime(
         datetime(target_date.year, target_date.month, target_date.day,
-                 20, 0, tzinfo=JST)  # 観測時間帯の中間
+                 20, 0, tzinfo=JST)
     )
     earth = eph['earth']
     sun = eph['sun']
     moon = eph['moon']
 
-    # 月と太陽の離角（黄経差）で月相を計算
-    e = earth.at(t_midnight)
-    s = e.observe(sun).apparent()
-    m = e.observe(moon).apparent()
+    # almanacで正確な月相角度を取得（0〜360°、0=新月、180=満月）
+    phase_angle = almanac.moon_phase(eph, t_obs).degrees
 
-    sun_lon, _, _ = s.ecliptic_latlon()
-    moon_lon, _, _ = m.ecliptic_latlon()
-
-    phase_angle = (moon_lon.degrees - sun_lon.degrees) % 360
+    # 月相名（45°刻み）
     phase_index = int(phase_angle / 45) % 8
     phase_name = MOON_PHASE_NAMES[phase_index]
 
-    # 月齢（概算: 離角÷12.19）
-    moon_age = round(phase_angle / 12.19, 1)
+    # 月齢（synodic month = 29.53059日、phase_angle比例）
+    moon_age = round(phase_angle / 360 * 29.53059, 1)
 
     # 潮の種類（月齢ベース）
     moon_age_int = int(moon_age + 0.5) % 30
-    tide_type = "中潮"  # デフォルト
+    tide_type = "中潮"
     for t_name, days in TIDE_TYPES.items():
         if moon_age_int in days:
             tide_type = t_name
             break
 
-    # 月の高度（観測時間帯に月が出ているか）
+    # 月の高度
     obs_pos = earth + OBSERVER
-    moon_alt, _, _ = obs_pos.at(t_midnight).observe(moon).apparent().altaz()
+    moon_alt, _, _ = obs_pos.at(t_obs).observe(moon).apparent().altaz()
 
-    # 月明かりの影響判定（月相と高度の両方を考慮）
-    # phase_angle: 0°=新月, 180°=満月
-    illumination = (1 - abs(180 - phase_angle) / 180) * 100  # 輝面比(%)
+    # 輝面比（phase_angle: 0°=新月→照度0%, 180°=満月→照度100%）
+    illumination = round((1 - math.cos(math.radians(phase_angle))) / 2 * 100, 0)
+
     moon_is_bright = moon_alt.degrees > 0 and illumination > 30
 
     if illumination < 15:
@@ -327,46 +317,13 @@ def get_moon_info(target_date) -> dict:
         "age": moon_age,
         "tide_type": tide_type,
         "moon_alt": round(moon_alt.degrees, 1),
-        "illumination": round(illumination, 0),
+        "illumination": illumination,
         "sky_note": sky_note,
     }
 
 
-# --- HTML ---
-def render_html(target_date, result=None, error_msg=None, next_visible=None, moon=None) -> str:
-    if error_msg:
-        content = f'<div class="error"><div class="status">{error_msg}</div></div>'
-    elif result:
-        content = f"""<div class="visible">
-  <div class="status">スターリンク 見える</div>
-  <div class="time">{result['time_str']}</div>
-  <div class="direction">{result['start_dir']}
-    <span class="context">（{result['start_context']}）</span>を見る</div>
-  <div class="arrow">↓</div>
-  <div class="direction">{result['end_dir']} へ流れる</div>
-  <div class="count">約{result['sat_count']}機の連なり</div>
-</div>"""
-    else:
-        content = '<div class="not-visible"><div class="status">今夜は<br>見えなそうです</div></div>'
-
-    # 次の候補
-    next_html = ""
-    if next_visible and not result:
-        next_html = f"""<div class="next-hint">
-  <div class="next-label">次の候補</div>
-  <div class="next-date">{next_visible['date']} {next_visible['time_str']}</div>
-  <div class="next-dir">{next_visible['start_dir']}（{next_visible['start_context']}）→ {next_visible['end_dir']}</div>
-</div>"""
-
-    # 月・潮汐
-    moon_html = ""
-    if moon:
-        moon_html = f"""<div class="moon-info">
-  <div class="moon-phase">{moon['phase']}</div>
-  <div class="moon-detail">月齢 {moon['age']}　{moon['tide_type']}</div>
-  <div class="moon-note">{moon['sky_note']}</div>
-</div>"""
-
+# --- HTML（ローディング画面 + JS非同期取得） ---
+def render_loading_html(target_date: str) -> str:
     return f"""<!DOCTYPE html>
 <html lang="ja"><head>
 <meta charset="UTF-8">
@@ -390,10 +347,11 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .visible .count{{font-size:.8rem;color:rgba(255,255,255,.25);margin-top:3rem}}
 .not-visible .status{{font-size:1.3rem;color:rgba(255,255,255,.5);line-height:1.8}}
 .error .status{{font-size:1rem;color:rgba(255,100,100,.6)}}
-.loading{{color:rgba(255,255,255,.3);font-size:.9rem;letter-spacing:.1em}}
-.loading .dots{{display:inline-block;animation:blink 1.4s infinite}}
-@keyframes blink{{0%,20%{{opacity:.2}}50%{{opacity:1}}100%{{opacity:.2}}}}
-.loading .dots span{{animation-delay:var(--d)}}
+.loading .status{{color:rgba(255,255,255,.3);font-size:.9rem;letter-spacing:.1em}}
+.loading .dots span{{opacity:.2;animation:blink 1.4s infinite}}
+.loading .dots span:nth-child(2){{animation-delay:.2s}}
+.loading .dots span:nth-child(3){{animation-delay:.4s}}
+@keyframes blink{{0%,80%,100%{{opacity:.2}}40%{{opacity:1}}}}
 .next-hint{{margin-top:3rem;padding-top:2rem;border-top:1px solid rgba(255,255,255,.08)}}
 .next-label{{font-size:.75rem;color:rgba(255,255,255,.25);letter-spacing:.2em;margin-bottom:.8rem}}
 .next-date{{font-size:1.1rem;color:rgba(255,255,255,.45);margin-bottom:.4rem}}
@@ -403,45 +361,77 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .moon-detail{{font-size:.8rem;color:rgba(255,255,255,.25);margin-bottom:.3rem}}
 .moon-note{{font-size:.75rem;color:rgba(255,255,255,.2)}}
 .footer{{position:fixed;bottom:1.5rem;font-size:.7rem;color:rgba(255,255,255,.15);letter-spacing:.1em}}
+#content{{transition:opacity .5s ease}}
 @media(min-width:600px){{.visible .time{{font-size:5.5rem}}.visible .direction{{font-size:1.5rem}}}}
 </style></head><body>
 <div class="place">竹富島・西桟橋</div>
 <div class="date">{target_date}</div>
-{content}
-{next_html}
-{moon_html}
+<div id="content">
+  <div class="loading">
+    <div class="status">衛星を探しています<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+  </div>
+</div>
 <div class="footer">Starlink Train Viewer</div>
+<script>
+(async()=>{{
+  const el=document.getElementById('content');
+  try{{
+    const r=await fetch('/api/tonight');
+    const d=await r.json();
+    if(d.error){{
+      el.innerHTML='<div class="error"><div class="status">'+d.error+'</div></div>';
+      return;
+    }}
+    let h='';
+    if(d.visible&&d.result){{
+      const s=d.result;
+      h='<div class="visible">'
+        +'<div class="status">スターリンク 見える</div>'
+        +'<div class="time">'+s.time_str+'</div>'
+        +'<div class="direction">'+s.start_dir
+        +' <span class="context">（'+s.start_context+'）</span>を見る</div>'
+        +'<div class="arrow">↓</div>'
+        +'<div class="direction">'+s.end_dir+' へ流れる</div>'
+        +'<div class="count">約'+s.sat_count+'機の連なり</div></div>';
+    }}else{{
+      h='<div class="not-visible"><div class="status">今夜は<br>見えなそうです</div></div>';
+      if(d.next_visible){{
+        const n=d.next_visible;
+        h+='<div class="next-hint">'
+          +'<div class="next-label">次の候補</div>'
+          +'<div class="next-date">'+n.date+' '+n.time_str+'</div>'
+          +'<div class="next-dir">'+n.start_dir+'（'+n.start_context+'）→ '+n.end_dir+'</div></div>';
+      }}
+    }}
+    if(d.moon){{
+      const m=d.moon;
+      h+='<div class="moon-info">'
+        +'<div class="moon-phase">'+m.phase+'</div>'
+        +'<div class="moon-detail">月齢 '+m.age+'　'+m.tide_type+'</div>'
+        +'<div class="moon-note">'+m.sky_note+'</div></div>';
+    }}
+    el.style.opacity='0';
+    setTimeout(()=>{{el.innerHTML=h;el.style.opacity='1';}},200);
+  }}catch(e){{
+    el.innerHTML='<div class="error"><div class="status">データの取得に失敗しました</div></div>';
+  }}
+}})();
+</script>
 </body></html>"""
 
 
 # --- エンドポイント ---
 @app.get("/", response_class=HTMLResponse)
 async def home():
+    """ローディング画面を即座に返し、データはJSで非同期取得する。"""
     now = datetime.now(tz=JST)
     today = now.date()
     obs_start = datetime(today.year, today.month, today.day, OBS_START_HOUR, 0, tzinfo=JST)
     obs_end = datetime(today.year, today.month, today.day, OBS_END_HOUR, 0, tzinfo=JST)
     if now > obs_end:
         obs_start += timedelta(days=1)
-        obs_end += timedelta(days=1)
-
-    result, error_msg, next_visible = None, None, None
-    moon = None
-    try:
-        sats = await fetch_tle_data()
-        recent = sats[-600:] if len(sats) > 600 else sats
-        passes = find_train_passes(recent, obs_start, obs_end)
-        trains = cluster_into_trains(passes)
-        result = select_best_train(trains)
-        if not result:
-            tomorrow = obs_start.date() + timedelta(days=1)
-            next_visible = find_next_visible(recent, tomorrow, max_days=3)
-        moon = get_moon_info(obs_start.date())
-    except Exception as e:
-        logger.error("エラー: %s", e)
-        error_msg = "衛星データの取得に失敗しました"
-
-    return render_html(obs_start.strftime("%m/%d"), result, error_msg, next_visible, moon)
+    target_date = obs_start.strftime("%m/%d")
+    return render_loading_html(target_date)
 
 
 @app.get("/api/tonight")
@@ -455,16 +445,25 @@ async def api_tonight():
         obs_end += timedelta(days=1)
     try:
         sats = await fetch_tle_data()
-        passes = find_train_passes(sats[-600:], obs_start, obs_end)
+        recent = sats[-MAX_SATS:] if len(sats) > MAX_SATS else sats
+        passes = find_train_passes(recent, obs_start, obs_end)
         trains = cluster_into_trains(passes)
         result = select_best_train(trains)
+        next_visible = None
+        if not result:
+            tomorrow = obs_start.date() + timedelta(days=1)
+            next_visible = find_next_visible(recent, tomorrow, max_days=3)
+        moon = get_moon_info(obs_start.date())
     except Exception as e:
-        return {"visible": False, "error": str(e)}
-    if result:
-        return {"visible": True, "time": result["time_str"],
-                "direction": f"{result['start_dir']}（{result['start_context']}）→ {result['end_dir']}",
-                "satellite_count": result["sat_count"]}
-    return {"visible": False}
+        logger.error("エラー: %s", e)
+        return JSONResponse({"error": "衛星データの取得に失敗しました"})
+
+    return {
+        "visible": result is not None,
+        "result": result,
+        "next_visible": next_visible,
+        "moon": moon,
+    }
 
 
 # --- 起動時にTLEプリフェッチ ---
