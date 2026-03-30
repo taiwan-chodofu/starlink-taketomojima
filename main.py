@@ -23,6 +23,7 @@ LON = 124.0893
 OBSERVER = wgs84.latlon(LAT, LON)
 JST = timezone(timedelta(hours=9))
 TLE_URLS = [
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100&format=text",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
     "https://www.celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
