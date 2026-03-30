@@ -23,7 +23,7 @@ LON = 124.0893
 OBSERVER = wgs84.latlon(LAT, LON)
 JST = timezone(timedelta(hours=9))
 TLE_URLS = [
-    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page_size=100",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page-size=100&sort=popularity&sort-dir=desc",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
 ]
@@ -308,12 +308,27 @@ def get_moon_info(target_date) -> dict:
     obs_pos = earth + OBSERVER
     moon_alt, _, _ = obs_pos.at(t_midnight).observe(moon).apparent().altaz()
 
+    # 月明かりの影響判定（月相と高度の両方を考慮）
+    # phase_angle: 0°=新月, 180°=満月
+    illumination = (1 - abs(180 - phase_angle) / 180) * 100  # 輝面比(%)
+    moon_is_bright = moon_alt.degrees > 0 and illumination > 30
+
+    if illumination < 15:
+        sky_note = "新月期 — 星空の条件◎"
+    elif not moon_is_bright:
+        sky_note = "月は沈んでいます — 星空◎"
+    elif illumination > 70:
+        sky_note = "月が明るい — 星は見えにくい"
+    else:
+        sky_note = "月明かりあり"
+
     return {
         "phase": phase_name,
         "age": moon_age,
         "tide_type": tide_type,
         "moon_alt": round(moon_alt.degrees, 1),
-        "moon_visible": moon_alt.degrees > 0,
+        "illumination": round(illumination, 0),
+        "sky_note": sky_note,
     }
 
 
@@ -346,11 +361,10 @@ def render_html(target_date, result=None, error_msg=None, next_visible=None, moo
     # 月・潮汐
     moon_html = ""
     if moon:
-        moon_note = "月が出ています — 星は見えにくい" if moon["moon_visible"] else "月は沈んでいます — 星空◎"
         moon_html = f"""<div class="moon-info">
   <div class="moon-phase">{moon['phase']}</div>
   <div class="moon-detail">月齢 {moon['age']}　{moon['tide_type']}</div>
-  <div class="moon-note">{moon_note}</div>
+  <div class="moon-note">{moon['sky_note']}</div>
 </div>"""
 
     return f"""<!DOCTYPE html>
@@ -376,6 +390,10 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .visible .count{{font-size:.8rem;color:rgba(255,255,255,.25);margin-top:3rem}}
 .not-visible .status{{font-size:1.3rem;color:rgba(255,255,255,.5);line-height:1.8}}
 .error .status{{font-size:1rem;color:rgba(255,100,100,.6)}}
+.loading{{color:rgba(255,255,255,.3);font-size:.9rem;letter-spacing:.1em}}
+.loading .dots{{display:inline-block;animation:blink 1.4s infinite}}
+@keyframes blink{{0%,20%{{opacity:.2}}50%{{opacity:1}}100%{{opacity:.2}}}}
+.loading .dots span{{animation-delay:var(--d)}}
 .next-hint{{margin-top:3rem;padding-top:2rem;border-top:1px solid rgba(255,255,255,.08)}}
 .next-label{{font-size:.75rem;color:rgba(255,255,255,.25);letter-spacing:.2em;margin-bottom:.8rem}}
 .next-date{{font-size:1.1rem;color:rgba(255,255,255,.45);margin-bottom:.4rem}}
