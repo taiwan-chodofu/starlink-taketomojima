@@ -259,8 +259,66 @@ def find_next_visible(sats_tle, start_date, max_days=3) -> dict | None:
     return None
 
 
+# --- 月・潮汐情報（Skyfield天文計算） ---
+MOON_PHASE_NAMES = ["🌑 新月", "🌒 三日月", "🌓 上弦", "🌔 十三夜",
+                     "🌕 満月", "🌖 十八夜", "🌗 下弦", "🌘 二十六夜"]
+TIDE_TYPES = {
+    "大潮": [0, 1, 14, 15, 29],      # 新月・満月前後
+    "中潮": [2, 3, 12, 13, 16, 17, 27, 28],
+    "小潮": [4, 5, 11, 18, 19, 26],
+    "長潮": [6, 20],
+    "若潮": [7, 21],
+}
+
+
+def get_moon_info(target_date) -> dict:
+    """月齢・月相・潮の種類を計算する。"""
+    t_midnight = ts.from_datetime(
+        datetime(target_date.year, target_date.month, target_date.day,
+                 20, 0, tzinfo=JST)  # 観測時間帯の中間
+    )
+    earth = eph['earth']
+    sun = eph['sun']
+    moon = eph['moon']
+
+    # 月と太陽の離角（黄経差）で月相を計算
+    e = earth.at(t_midnight)
+    s = e.observe(sun).apparent()
+    m = e.observe(moon).apparent()
+
+    sun_lon, _, _ = s.ecliptic_latlon()
+    moon_lon, _, _ = m.ecliptic_latlon()
+
+    phase_angle = (moon_lon.degrees - sun_lon.degrees) % 360
+    phase_index = int(phase_angle / 45) % 8
+    phase_name = MOON_PHASE_NAMES[phase_index]
+
+    # 月齢（概算: 離角÷12.19）
+    moon_age = round(phase_angle / 12.19, 1)
+
+    # 潮の種類（月齢ベース）
+    moon_age_int = int(moon_age + 0.5) % 30
+    tide_type = "中潮"  # デフォルト
+    for t_name, days in TIDE_TYPES.items():
+        if moon_age_int in days:
+            tide_type = t_name
+            break
+
+    # 月の高度（観測時間帯に月が出ているか）
+    obs_pos = earth + OBSERVER
+    moon_alt, _, _ = obs_pos.at(t_midnight).observe(moon).apparent().altaz()
+
+    return {
+        "phase": phase_name,
+        "age": moon_age,
+        "tide_type": tide_type,
+        "moon_alt": round(moon_alt.degrees, 1),
+        "moon_visible": moon_alt.degrees > 0,
+    }
+
+
 # --- HTML ---
-def render_html(target_date, result=None, error_msg=None, next_visible=None) -> str:
+def render_html(target_date, result=None, error_msg=None, next_visible=None, moon=None) -> str:
     if error_msg:
         content = f'<div class="error"><div class="status">{error_msg}</div></div>'
     elif result:
@@ -283,6 +341,16 @@ def render_html(target_date, result=None, error_msg=None, next_visible=None) -> 
   <div class="next-label">次の候補</div>
   <div class="next-date">{next_visible['date']} {next_visible['time_str']}</div>
   <div class="next-dir">{next_visible['start_dir']}（{next_visible['start_context']}）→ {next_visible['end_dir']}</div>
+</div>"""
+
+    # 月・潮汐
+    moon_html = ""
+    if moon:
+        moon_note = "月が出ています — 星は見えにくい" if moon["moon_visible"] else "月は沈んでいます — 星空◎"
+        moon_html = f"""<div class="moon-info">
+  <div class="moon-phase">{moon['phase']}</div>
+  <div class="moon-detail">月齢 {moon['age']}　{moon['tide_type']}</div>
+  <div class="moon-note">{moon_note}</div>
 </div>"""
 
     return f"""<!DOCTYPE html>
@@ -312,6 +380,10 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 .next-label{{font-size:.75rem;color:rgba(255,255,255,.25);letter-spacing:.2em;margin-bottom:.8rem}}
 .next-date{{font-size:1.1rem;color:rgba(255,255,255,.45);margin-bottom:.4rem}}
 .next-dir{{font-size:.85rem;color:rgba(255,255,255,.3)}}
+.moon-info{{margin-top:2.5rem;padding-top:1.5rem;border-top:1px solid rgba(255,255,255,.06)}}
+.moon-phase{{font-size:1rem;color:rgba(255,255,255,.4);margin-bottom:.4rem}}
+.moon-detail{{font-size:.8rem;color:rgba(255,255,255,.25);margin-bottom:.3rem}}
+.moon-note{{font-size:.75rem;color:rgba(255,255,255,.2)}}
 .footer{{position:fixed;bottom:1.5rem;font-size:.7rem;color:rgba(255,255,255,.15);letter-spacing:.1em}}
 @media(min-width:600px){{.visible .time{{font-size:5.5rem}}.visible .direction{{font-size:1.5rem}}}}
 </style></head><body>
@@ -319,6 +391,7 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
 <div class="date">{target_date}</div>
 {content}
 {next_html}
+{moon_html}
 <div class="footer">Starlink Train Viewer</div>
 </body></html>"""
 
@@ -335,21 +408,22 @@ async def home():
         obs_end += timedelta(days=1)
 
     result, error_msg, next_visible = None, None, None
+    moon = None
     try:
         sats = await fetch_tle_data()
         recent = sats[-600:] if len(sats) > 600 else sats
         passes = find_train_passes(recent, obs_start, obs_end)
         trains = cluster_into_trains(passes)
         result = select_best_train(trains)
-        # 今夜見えない場合、翌日以降をスキャン
         if not result:
             tomorrow = obs_start.date() + timedelta(days=1)
             next_visible = find_next_visible(recent, tomorrow, max_days=3)
+        moon = get_moon_info(obs_start.date())
     except Exception as e:
         logger.error("エラー: %s", e)
         error_msg = "衛星データの取得に失敗しました"
 
-    return render_html(obs_start.strftime("%m/%d"), result, error_msg, next_visible)
+    return render_html(obs_start.strftime("%m/%d"), result, error_msg, next_visible, moon)
 
 
 @app.get("/api/tonight")
