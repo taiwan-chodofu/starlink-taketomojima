@@ -236,21 +236,65 @@ def select_best_train(trains):
     }
 
 
-def find_next_visible(sats_tle, start_date, max_days=3) -> dict | None:
-    """今夜以降max_days日分をスキャンし、最初に可視パスが見つかった日の情報を返す。"""
+def find_next_visible(sats_tle, start_date, max_days=7) -> dict | None:
+    """今夜以降max_days日分をスキャンし、最初に可視パスが見つかった日の情報を返す。
+    翌日以降は高度閾値を緩和（20°）して検出率を上げる。"""
     for day_offset in range(max_days):
         target = start_date + timedelta(days=day_offset)
         obs_start = datetime(target.year, target.month, target.day,
                              OBS_START_HOUR, 0, tzinfo=JST)
         obs_end = datetime(target.year, target.month, target.day,
                            OBS_END_HOUR, 0, tzinfo=JST)
-        passes = find_train_passes(sats_tle, obs_start, obs_end,
-                                   interval_min=NEXT_SCAN_INTERVAL_MIN)
+        passes = find_train_passes_relaxed(sats_tle, obs_start, obs_end)
         trains = cluster_into_trains(passes)
         best = select_best_train(trains)
         if best:
             date_str = target.strftime("%-m/%-d")
             return {"date": date_str, **best}
+    return None
+
+
+def find_train_passes_relaxed(sats_tle, obs_start, obs_end):
+    """翌日以降の予測用: 高度閾値20°、10分間隔で軽量スキャン。"""
+    min_alt = 20.0
+    passes, time_steps, current = [], [], obs_start
+    while current <= obs_end:
+        time_steps.append(current)
+        current += timedelta(minutes=NEXT_SCAN_INTERVAL_MIN)
+    twilight_ok = {}
+    for t in time_steps:
+        t_sf = ts.from_datetime(t)
+        twilight_ok[t] = is_observable_twilight(t_sf)
+    for name, l1, l2 in sats_tle:
+        try:
+            sat = EarthSatellite(l1, l2, name, ts)
+        except Exception:
+            continue
+        for t in time_steps:
+            if not twilight_ok[t]:
+                continue
+            t_sf = ts.from_datetime(t)
+            alt, az, dist = (sat - OBSERVER).at(t_sf).altaz()
+            if alt.degrees >= min_alt:
+                passes.append({"name": name, "time": t,
+                               "alt": alt.degrees, "az": az.degrees,
+                               "dist_km": dist.km})
+                break
+    return passes
+
+
+def find_next_dark_sky(start_date, max_days=30) -> dict | None:
+    """次の新月期（輝面比15%以下）を探す。衛星予測が見つからない場合のフォールバック。"""
+    for day_offset in range(max_days):
+        target = start_date + timedelta(days=day_offset)
+        t_obs = ts.from_datetime(
+            datetime(target.year, target.month, target.day, 20, 0, tzinfo=JST)
+        )
+        phase_angle = almanac.moon_phase(eph, t_obs).degrees
+        illumination = (1 - math.cos(math.radians(phase_angle))) / 2 * 100
+        if illumination < 15:
+            date_str = target.strftime("%-m/%-d")
+            return {"date": date_str, "illumination": round(illumination, 0)}
     return None
 
 
@@ -386,21 +430,27 @@ align-items:center;justify-content:center;padding:2rem 1.5rem;text-align:center;
     if(d.visible&&d.result){{
       const s=d.result;
       h='<div class="visible">'
-        +'<div class="status">スターリンク 見える</div>'
+        +'<div class="status">今夜はスターリンクが<br>西桟橋から見えるかもしれません</div>'
         +'<div class="time">'+s.time_str+'</div>'
         +'<div class="direction">'+s.start_dir
-        +' <span class="context">（'+s.start_context+'）</span>を見る</div>'
+        +' <span class="context">（'+s.start_context+'）</span>の方角を見る</div>'
         +'<div class="arrow">↓</div>'
         +'<div class="direction">'+s.end_dir+' へ流れる</div>'
         +'<div class="count">約'+s.sat_count+'機の連なり</div></div>';
     }}else{{
-      h='<div class="not-visible"><div class="status">今夜は<br>見えなそうです</div></div>';
+      h='<div class="not-visible"><div class="status">今夜はスターリンクが<br>西桟橋から見えなそうです</div></div>';
       if(d.next_visible){{
         const n=d.next_visible;
         h+='<div class="next-hint">'
           +'<div class="next-label">次の候補</div>'
           +'<div class="next-date">'+n.date+' '+n.time_str+'</div>'
           +'<div class="next-dir">'+n.start_dir+'（'+n.start_context+'）→ '+n.end_dir+'</div></div>';
+      }}else if(d.next_dark_sky){{
+        const ds=d.next_dark_sky;
+        h+='<div class="next-hint">'
+          +'<div class="next-label">星空の好条件</div>'
+          +'<div class="next-date">'+ds.date+'〜 新月期</div>'
+          +'<div class="next-dir">月明かりが少なく観測に適しています</div></div>';
       }}
     }}
     if(d.moon){{
@@ -450,9 +500,12 @@ async def api_tonight():
         trains = cluster_into_trains(passes)
         result = select_best_train(trains)
         next_visible = None
+        next_dark_sky = None
         if not result:
             tomorrow = obs_start.date() + timedelta(days=1)
-            next_visible = find_next_visible(recent, tomorrow, max_days=3)
+            next_visible = find_next_visible(recent, tomorrow, max_days=7)
+            if not next_visible:
+                next_dark_sky = find_next_dark_sky(tomorrow, max_days=30)
         moon = get_moon_info(obs_start.date())
     except Exception as e:
         logger.error("エラー: %s", e)
@@ -462,6 +515,7 @@ async def api_tonight():
         "visible": result is not None,
         "result": result,
         "next_visible": next_visible,
+        "next_dark_sky": next_dark_sky,
         "moon": moon,
     }
 
