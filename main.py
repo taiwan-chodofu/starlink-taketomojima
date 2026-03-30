@@ -26,7 +26,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Starlink Nishi-Sanbashi")
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+# テンプレートディレクトリ: templates/ があればそちら、なければルート直下
+_templates_dir = Path(__file__).parent / "templates"
+if not _templates_dir.exists():
+    _templates_dir = Path(__file__).parent
+templates = Jinja2Templates(directory=str(_templates_dir))
 
 # --- 定数 ---
 LAT = 24.3237
