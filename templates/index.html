@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>西桟橋 — Starlink</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+  /* ------- 基本 ------- */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --ink-100: rgba(255,255,255,0.92);
+    --ink-80:  rgba(255,255,255,0.72);
+    --ink-60:  rgba(255,255,255,0.48);
+    --ink-40:  rgba(255,255,255,0.30);
+    --ink-20:  rgba(255,255,255,0.16);
+    --ink-10:  rgba(255,255,255,0.08);
+    --hairline: rgba(255,255,255,0.06);
+  }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP",
+                 -apple-system, BlinkMacSystemFont, serif;
+    color: var(--ink-100);
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2.5rem 1.5rem 4rem;
+    text-align: center;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    position: relative;
+
+    /* 時刻連動背景（JSで --sky-hue / --sky-dark を上書き） */
+    background:
+      radial-gradient(ellipse 120% 80% at 50% 120%,
+        hsla(var(--sky-hue, 220), 40%, 12%, 1) 0%,
+        #000 70%);
+    background-attachment: fixed;
+    transition: background 1.2s ease;
+  }
+
+  /* ------- 星（ランダムに薄く光る） ------- */
+  .stars {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.7;
+    z-index: 0;
+  }
+  .stars::before, .stars::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,.5), transparent 50%),
+      radial-gradient(1px 1px at 75% 15%, rgba(255,255,255,.4), transparent 50%),
+      radial-gradient(1px 1px at 50% 80%, rgba(255,255,255,.3), transparent 50%),
+      radial-gradient(1px 1px at 10% 70%, rgba(255,255,255,.4), transparent 50%),
+      radial-gradient(1px 1px at 90% 60%, rgba(255,255,255,.3), transparent 50%),
+      radial-gradient(1px 1px at 40% 10%, rgba(255,255,255,.4), transparent 50%),
+      radial-gradient(1px 1px at 60% 50%, rgba(255,255,255,.25), transparent 50%),
+      radial-gradient(1px 1px at 30% 90%, rgba(255,255,255,.35), transparent 50%),
+      radial-gradient(1px 1px at 85% 85%, rgba(255,255,255,.3), transparent 50%),
+      radial-gradient(1px 1px at 15% 45%, rgba(255,255,255,.25), transparent 50%);
+    animation: twinkle 7s ease-in-out infinite;
+  }
+  .stars::after {
+    animation-delay: -3.5s;
+    opacity: 0.5;
+  }
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 0.35; }
+  }
+
+  /* ------- レイアウト ------- */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 28rem;
+    width: 100%;
+  }
+
+  .place {
+    font-size: 0.8rem;
+    letter-spacing: 0.5em;
+    color: var(--ink-40);
+    margin-bottom: 0.5rem;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  .date {
+    font-size: 0.85rem;
+    color: var(--ink-40);
+    margin-bottom: 4rem;
+    letter-spacing: 0.1em;
+    font-feature-settings: "tnum";
+  }
+
+  /* ------- ローディング ------- */
+  .loading {
+    font-size: 0.85rem;
+    color: var(--ink-40);
+    letter-spacing: 0.2em;
+  }
+  .loading .dots span {
+    display: inline-block;
+    opacity: 0.2;
+    animation: blink 1.4s infinite;
+  }
+  .loading .dots span:nth-child(2) { animation-delay: .2s; }
+  .loading .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink {
+    0%, 80%, 100% { opacity: 0.2; }
+    40% { opacity: 1; }
+  }
+
+  /* ------- 可視時 ------- */
+  .visible { animation: fadeUp 1.2s ease both; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .visible .status {
+    font-size: 0.95rem;
+    color: var(--ink-60);
+    margin-bottom: 3rem;
+    letter-spacing: 0.15em;
+    line-height: 1.8;
+  }
+
+  .visible .time {
+    font-size: 5.5rem;
+    font-weight: 100;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    margin-bottom: 0.8rem;
+    color: var(--ink-100);
+    font-feature-settings: "tnum";
+  }
+
+  .visible .countdown {
+    font-size: 0.8rem;
+    color: var(--ink-40);
+    letter-spacing: 0.2em;
+    margin-bottom: 3rem;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "tnum";
+    min-height: 1rem;
+  }
+
+  .visible .direction {
+    font-size: 1.15rem;
+    line-height: 2;
+    color: var(--ink-80);
+  }
+  .visible .direction .context {
+    font-size: 0.75rem;
+    color: var(--ink-40);
+    margin-left: 0.4rem;
+  }
+
+  /* 流れ線（start → end） */
+  .visible .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin: 1.4rem 0;
+  }
+  .visible .flow .line {
+    flex: 0 0 3.5rem;
+    height: 1px;
+    background: linear-gradient(90deg, var(--ink-20), var(--ink-40), var(--ink-20));
+    position: relative;
+    overflow: hidden;
+  }
+  .visible .flow .line::after {
+    content: "";
+    position: absolute;
+    top: 0; left: -30%;
+    width: 30%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.9), transparent);
+    animation: sweep 3.6s ease-in-out infinite;
+  }
+  @keyframes sweep {
+    0% { left: -30%; }
+    100% { left: 130%; }
+  }
+
+  .visible .count {
+    font-size: 0.75rem;
+    color: var(--ink-40);
+    margin-top: 3.5rem;
+    letter-spacing: 0.15em;
+  }
+
+  /* ------- 不可視時 ------- */
+  .not-visible .status {
+    font-size: 1.15rem;
+    color: var(--ink-60);
+    line-height: 2;
+    letter-spacing: 0.1em;
+    animation: fadeUp 1.2s ease both;
+  }
+
+  .next-hint {
+    margin-top: 3.5rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--hairline);
+    animation: fadeUp 1.6s ease both;
+  }
+  .next-label {
+    font-size: 0.7rem;
+    color: var(--ink-40);
+    letter-spacing: 0.3em;
+    margin-bottom: 1rem;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  .next-date {
+    font-size: 1rem;
+    color: var(--ink-60);
+    margin-bottom: 0.4rem;
+    font-feature-settings: "tnum";
+  }
+  .next-dir {
+    font-size: 0.8rem;
+    color: var(--ink-40);
+  }
+
+  /* ------- 月情報（折りたたみ） ------- */
+  .moon-info {
+    margin-top: 3rem;
+    padding-top: 1.8rem;
+    border-top: 1px solid var(--hairline);
+    animation: fadeUp 2s ease both;
+  }
+  .moon-toggle {
+    background: none;
+    border: none;
+    color: var(--ink-40);
+    font-size: 0.75rem;
+    letter-spacing: 0.3em;
+    cursor: pointer;
+    padding: 0.5rem 1rem;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    transition: color 0.3s;
+  }
+  .moon-toggle:hover { color: var(--ink-60); }
+  .moon-toggle::after {
+    content: "▾";
+    margin-left: 0.5rem;
+    display: inline-block;
+    transition: transform 0.3s;
+  }
+  .moon-toggle[aria-expanded="true"]::after { transform: rotate(180deg); }
+
+  .moon-detail {
+    max-height: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: max-height 0.4s ease, opacity 0.4s ease;
+  }
+  .moon-detail.open {
+    max-height: 8rem;
+    opacity: 1;
+    margin-top: 1rem;
+  }
+  .moon-phase {
+    font-size: 1rem;
+    color: var(--ink-60);
+    margin-bottom: 0.4rem;
+  }
+  .moon-meta {
+    font-size: 0.75rem;
+    color: var(--ink-40);
+    margin-bottom: 0.3rem;
+  }
+  .moon-note {
+    font-size: 0.7rem;
+    color: var(--ink-40);
+    letter-spacing: 0.1em;
+  }
+
+  /* ------- エラー ------- */
+  .error .status {
+    font-size: 0.95rem;
+    color: rgba(255, 180, 180, 0.6);
+    letter-spacing: 0.1em;
+  }
+
+  /* ------- フッター ------- */
+  footer {
+    position: fixed;
+    bottom: 1.2rem;
+    left: 0; right: 0;
+    font-size: 0.65rem;
+    color: var(--ink-20);
+    letter-spacing: 0.3em;
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    z-index: 1;
+  }
+
+  /* ------- レスポンシブ ------- */
+  @media (min-width: 600px) {
+    .visible .time { font-size: 7rem; }
+    .visible .direction { font-size: 1.3rem; }
+    .place { font-size: 0.9rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="stars" aria-hidden="true"></div>
+
+<main>
+  <div class="place">竹富島・西桟橋</div>
+  <div class="date">{{ target_date }}</div>
+
+  <div id="content">
+    <div class="loading">
+      <span>衛星を探しています</span>
+      <span class="dots"><span>.</span><span>.</span><span>.</span></span>
+    </div>
+  </div>
+</main>
+
+<footer>STARLINK TRAIN VIEWER</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- 時刻連動背景 ----------
+  // 18時台: 夕焼けの名残り（hue 20, 濃い茜）
+  // 19時台: 薄明の群青（hue 220）
+  // 20時以降: ほぼ純黒
+  function updateSky() {
+    const now = new Date();
+    const h = now.getHours() + now.getMinutes() / 60;
+    let hue, note;
+    if (h >= 17 && h < 18.5) {       // 夕焼け残照
+      hue = 20;
+    } else if (h >= 18.5 && h < 19.5) { // 薄明
+      hue = 250;
+    } else {                            // 夜
+      hue = 220;
+    }
+    document.documentElement.style.setProperty('--sky-hue', hue);
+  }
+  updateSky();
+  setInterval(updateSky, 60 * 1000);
+
+  // ---------- カウントダウン ----------
+  let countdownTimer = null;
+  function startCountdown(isoTime) {
+    const target = new Date(isoTime);
+    const el = document.getElementById('countdown');
+    if (!el) return;
+
+    function tick() {
+      const now = new Date();
+      const diffMs = target - now;
+      if (diffMs <= 0) {
+        el.textContent = 'NOW — 空を見上げて';
+        clearInterval(countdownTimer);
+        return;
+      }
+      const totalMin = Math.floor(diffMs / 60000);
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      if (h > 0) {
+        el.textContent = `あと ${h} 時間 ${m} 分`;
+      } else if (m > 0) {
+        el.textContent = `あと ${m} 分`;
+      } else {
+        const s = Math.floor(diffMs / 1000);
+        el.textContent = `あと ${s} 秒`;
+      }
+    }
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+  }
+
+  // ---------- 月情報トグル ----------
+  function attachMoonToggle() {
+    const btn = document.querySelector('.moon-toggle');
+    const detail = document.querySelector('.moon-detail');
+    if (!btn || !detail) return;
+    btn.addEventListener('click', () => {
+      const open = detail.classList.toggle('open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+
+  // ---------- レンダリング ----------
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;',
+      '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function renderVisible(d) {
+    const s = d.result;
+    return `
+      <div class="visible">
+        <div class="status">今夜はスターリンクが<br>西桟橋から見えるかもしれません</div>
+        <div class="time">${escapeHtml(s.time_str)}</div>
+        <div class="countdown" id="countdown">—</div>
+        <div class="direction">
+          ${escapeHtml(s.start_dir)}
+          <span class="context">（${escapeHtml(s.start_context)}）</span>
+          を見る
+        </div>
+        <div class="flow">
+          <span class="line" aria-hidden="true"></span>
+        </div>
+        <div class="direction">${escapeHtml(s.end_dir)} へ流れる</div>
+        <div class="count">約 ${escapeHtml(s.sat_count)} 機の連なり</div>
+      </div>
+    `;
+  }
+
+  function renderNotVisible(d) {
+    let html = '<div class="not-visible"><div class="status">今夜はスターリンクが<br>西桟橋から見えなそうです</div></div>';
+    if (d.next_visible) {
+      const n = d.next_visible;
+      html += `
+        <div class="next-hint">
+          <div class="next-label">NEXT</div>
+          <div class="next-date">${escapeHtml(n.date)} ${escapeHtml(n.time_str)}</div>
+          <div class="next-dir">${escapeHtml(n.start_dir)}（${escapeHtml(n.start_context)}）→ ${escapeHtml(n.end_dir)}</div>
+        </div>
+      `;
+    } else if (d.next_dark_sky) {
+      const ds = d.next_dark_sky;
+      html += `
+        <div class="next-hint">
+          <div class="next-label">DARK SKY</div>
+          <div class="next-date">${escapeHtml(ds.date)}〜 新月期</div>
+          <div class="next-dir">月明かりが少なく、星空が深く見える頃</div>
+        </div>
+      `;
+    }
+    return html;
+  }
+
+  function renderMoon(m) {
+    return `
+      <div class="moon-info">
+        <button class="moon-toggle" aria-expanded="false">今夜の月と潮</button>
+        <div class="moon-detail">
+          <div class="moon-phase">${escapeHtml(m.phase)}</div>
+          <div class="moon-meta">月齢 ${escapeHtml(m.age)}　${escapeHtml(m.tide_type)}</div>
+          <div class="moon-note">${escapeHtml(m.sky_note)}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function load() {
+    const el = document.getElementById('content');
+    try {
+      const r = await fetch('/api/tonight');
+      const d = await r.json();
+
+      if (d.error) {
+        el.innerHTML = `<div class="error"><div class="status">${escapeHtml(d.error)}</div></div>`;
+        return;
+      }
+
+      let html = '';
+      if (d.visible && d.result) {
+        html = renderVisible(d);
+      } else {
+        html = renderNotVisible(d);
+      }
+      if (d.moon) {
+        html += renderMoon(d.moon);
+      }
+
+      el.style.opacity = '0';
+      setTimeout(() => {
+        el.innerHTML = html;
+        el.style.opacity = '1';
+        if (d.visible && d.result && d.result.time_iso) {
+          startCountdown(d.result.time_iso);
+        }
+        attachMoonToggle();
+      }, 200);
+
+    } catch (e) {
+      el.innerHTML = '<div class="error"><div class="status">データの取得に失敗しました</div></div>';
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', load);
+
+  // ---------- Service Worker ----------
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+})();
+</script>
+
+</body>
+</html>
