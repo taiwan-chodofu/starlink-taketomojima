@@ -274,6 +274,113 @@
     padding: 0 0.4rem;
   }
 
+  /* アクションボタン群 */
+  .obs-index-actions {
+    display: flex;
+    gap: 0.6rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 1.2rem;
+  }
+  .ics-btn, .compass-btn {
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    letter-spacing: 0.15em;
+    color: var(--amber);
+    background: transparent;
+    border: 1px solid rgba(255, 184, 107, 0.3);
+    border-radius: 999px;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all var(--dur-fast);
+    font-feature-settings: "palt" 1;
+  }
+  .ics-btn:hover, .compass-btn:hover {
+    background: rgba(255, 184, 107, 0.1);
+    border-color: var(--amber);
+  }
+  .ics-btn:focus-visible, .compass-btn:focus-visible {
+    outline: 1px solid var(--amber);
+    outline-offset: 2px;
+  }
+
+  /* コンパス表示 */
+  .compass-wrap {
+    margin-top: 1.4rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--hairline);
+  }
+  .compass-ring {
+    width: 6rem;
+    height: 6rem;
+    margin: 0 auto 0.8rem;
+    border: 1px solid rgba(255, 184, 107, 0.35);
+    border-radius: 50%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle, rgba(255,184,107,0.06), transparent 70%);
+  }
+  .compass-arrow {
+    font-size: 2rem;
+    color: var(--amber);
+    transition: transform 0.3s var(--ease-out);
+    text-shadow: 0 0 12px rgba(255, 184, 107, 0.5);
+    line-height: 1;
+  }
+  .compass-target {
+    position: absolute;
+    bottom: -0.4rem;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-tnum);
+    font-size: var(--size-micro);
+    color: var(--ink-60);
+    background: var(--bg-0);
+    padding: 0 0.4rem;
+    letter-spacing: 0.15em;
+    font-variant-numeric: tabular-nums;
+  }
+  .compass-hint {
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-60);
+    letter-spacing: 0.2em;
+    font-variant-numeric: tabular-nums;
+  }
+  .compass-wrap.compass-on-target .compass-arrow {
+    color: #a8e063;
+    text-shadow: 0 0 18px rgba(168, 224, 99, 0.5);
+  }
+  .compass-wrap.compass-on-target .compass-hint {
+    color: #a8e063;
+  }
+
+  /* A2: 観測時刻5分前の強調モード */
+  .obs-index.about-to-start {
+    animation: urgentPulse 1.6s ease-in-out infinite, fadeUp 1.2s var(--ease-out) both;
+    border-color: var(--amber);
+    background:
+      radial-gradient(ellipse at 50% 0%, rgba(255, 184, 107, 0.18), transparent 70%),
+      linear-gradient(180deg, rgba(255, 184, 107, 0.08), rgba(255, 184, 107, 0.03));
+  }
+  @keyframes urgentPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 184, 107, 0); }
+    50%      { box-shadow: 0 0 24px 2px rgba(255, 184, 107, 0.35); }
+  }
+  .obs-index.about-to-start .obs-index-advice::before {
+    content: "▸ 見え始めまで間もなく";
+    display: block;
+    color: var(--amber);
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    letter-spacing: 0.2em;
+    margin-bottom: 0.5rem;
+    animation: fadeUp 0.6s ease both;
+  }
+
   /* ==========================================================
      Tonight レイヤー — 可視時
      ========================================================== */
@@ -934,8 +1041,100 @@
         <div class="obs-index-time">${escapeHtml(idx.best_time_start)} 〜 ${escapeHtml(idx.best_time_end)}</div>
         <div class="obs-index-direction">${escapeHtml(idx.best_direction)}</div>
         <div class="obs-index-advice">${escapeHtml(idx.advice)}</div>
+        <div class="obs-index-actions">
+          <a class="ics-btn" href="/calendar.ics" download="starlink-nishi.ics">
+            <span aria-hidden="true">📅</span> カレンダーに追加
+          </a>
+          <button class="compass-btn" id="compass-btn" type="button" hidden>
+            <span aria-hidden="true">🧭</span> 方角ガイドを開始
+          </button>
+        </div>
+        <div class="compass-wrap" id="compass-wrap" hidden aria-live="polite">
+          <div class="compass-ring">
+            <div class="compass-arrow" id="compass-arrow" aria-hidden="true">↑</div>
+            <div class="compass-target" id="compass-target">—</div>
+          </div>
+          <div class="compass-hint" id="compass-hint">—</div>
+        </div>
       </div>
     `;
+  }
+
+  // ==========================================================
+  // コンパス（DeviceOrientation API）
+  // ==========================================================
+  // 8方位名→方位角（度、北=0、時計回り）
+  const DIRECTION_DEG = {
+    "北": 0, "北東": 45, "東": 90, "南東": 135,
+    "南": 180, "南西": 225, "西": 270, "北西": 315,
+  };
+
+  function parseDirectionDeg(directionText) {
+    // "南東（島の上空）→ 南" のような文字列から最初の方位名を抽出
+    if (!directionText) return null;
+    const match = directionText.match(/(北東|北西|南東|南西|北|東|南|西)/);
+    if (!match) return null;
+    return DIRECTION_DEG[match[1]];
+  }
+
+  function setupCompass(targetDeg) {
+    const btn = document.getElementById('compass-btn');
+    const wrap = document.getElementById('compass-wrap');
+    const arrow = document.getElementById('compass-arrow');
+    const target = document.getElementById('compass-target');
+    const hint = document.getElementById('compass-hint');
+    if (!btn || !wrap || targetDeg == null) return;
+
+    // DeviceOrientation非対応デバイスではボタンを隠したまま
+    if (typeof DeviceOrientationEvent === 'undefined') return;
+
+    btn.hidden = false;
+    target.textContent = Math.round(targetDeg) + '°';
+
+    async function start() {
+      // iOS 13+ は明示的許可が必要
+      if (typeof DeviceOrientationEvent !== 'undefined'
+          && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+          const res = await DeviceOrientationEvent.requestPermission();
+          if (res !== 'granted') {
+            hint.textContent = 'コンパスの使用が許可されませんでした';
+            return;
+          }
+        } catch (e) {
+          hint.textContent = 'コンパスを有効化できませんでした';
+          return;
+        }
+      }
+
+      btn.hidden = true;
+      wrap.hidden = false;
+
+      window.addEventListener('deviceorientationabsolute', handler, true);
+      window.addEventListener('deviceorientation', handler, true);
+    }
+
+    function handler(ev) {
+      // alpha: デバイス上部が北からどれだけ時計回りに回転したか
+      let heading = ev.webkitCompassHeading ?? (ev.alpha != null ? (360 - ev.alpha) : null);
+      if (heading == null) return;
+      // 目的方位 - 現在方位 = 回転量（矢印がどれだけ回れば目的の方を指すか）
+      let delta = (targetDeg - heading + 360) % 360;
+      arrow.style.transform = `rotate(${delta}deg)`;
+      let diff = Math.abs(delta > 180 ? delta - 360 : delta);
+      if (diff < 10) {
+        hint.textContent = 'その方向です';
+        wrap.classList.add('compass-on-target');
+      } else if (delta <= 180) {
+        hint.textContent = `右に ${Math.round(delta)}°`;
+        wrap.classList.remove('compass-on-target');
+      } else {
+        hint.textContent = `左に ${Math.round(360 - delta)}°`;
+        wrap.classList.remove('compass-on-target');
+      }
+    }
+
+    btn.addEventListener('click', start);
   }
 
   // ==========================================================
@@ -1106,6 +1305,35 @@
   }
 
   // ==========================================================
+  // A2: 観測時刻の自動監視（5分前に "about-to-start" クラス付与）
+  // ==========================================================
+  let watchTimer = null;
+  function watchObsTime(bestTimeStart) {
+    if (watchTimer) clearInterval(watchTimer);
+    if (!bestTimeStart) return;
+
+    const [h, m] = bestTimeStart.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return;
+
+    function check() {
+      const now = new Date();
+      const target = new Date(now);
+      target.setHours(h, m, 0, 0);
+      // すでに目的時刻を過ぎている場合は翌日扱いにしない（今夜の観測時刻は本日の対象）
+      const diffMin = (target - now) / 60000;
+      const card = document.querySelector('.obs-index');
+      if (!card) return;
+      if (diffMin <= 5 && diffMin > -30) {
+        card.classList.add('about-to-start');
+      } else {
+        card.classList.remove('about-to-start');
+      }
+    }
+    check();
+    watchTimer = setInterval(check, 30 * 1000);
+  }
+
+  // ==========================================================
   // メインロード
   // ==========================================================
   async function load() {
@@ -1140,6 +1368,15 @@
           startCountdown(d.result.time_iso);
         }
         attachMoonToggle();
+
+        // A1: コンパス連動
+        const idx = d.observation_index;
+        if (idx) {
+          const targetDeg = parseDirectionDeg(idx.best_direction);
+          if (targetDeg != null) setupCompass(targetDeg);
+          // A2: 観測時刻の監視
+          watchObsTime(idx.best_time_start);
+        }
       }, 250);
 
     } catch (e) {

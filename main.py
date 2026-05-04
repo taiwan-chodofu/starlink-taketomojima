@@ -966,6 +966,112 @@ async def api_tonight():
     }
 
 
+# --- カレンダー .ics ダウンロード ---
+def _ics_escape(s: str) -> str:
+    """iCalendar文字列のエスケープ（RFC5545準拠）。"""
+    return s.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\\;").replace("\n", "\\n")
+
+
+def _ics_fmt_utc(dt: datetime) -> str:
+    """datetimeをiCalendar UTC形式 (YYYYMMDDTHHMMSSZ) に変換。"""
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+@app.get("/calendar.ics", response_class=HTMLResponse)
+async def calendar_ics():
+    """次回観測候補と次の新月期を.icsで返す（カレンダーに追加用）。"""
+    obs_start, obs_end, _ = _compute_observation_window()
+    events_items = []
+
+    try:
+        sats = await fetch_tle_data()
+        candidates = filter_train_candidates(sats)
+        passes = find_train_passes(candidates, obs_start, obs_end)
+        trains = cluster_into_trains(passes)
+        best = select_best_train(trains)
+
+        if best and best.get("time_iso"):
+            t_iso = best["time_iso"]
+            try:
+                t_start = datetime.fromisoformat(t_iso)
+            except ValueError:
+                t_start = obs_start
+            t_end = t_start + timedelta(minutes=15)
+            events_items.append({
+                "uid": f"starlink-{t_start.strftime('%Y%m%dT%H%M')}@nishi-sanbashi",
+                "summary": "スターリンク観測（西桟橋）",
+                "description": (
+                    f"{best['start_dir']}（{best['start_context']}）→ "
+                    f"{best['end_dir']}、約{best['sat_count']}機"
+                ),
+                "start": t_start,
+                "end": t_end,
+            })
+        else:
+            # トレイン候補がなければ今夜の観測窓を丸ごと提案
+            events_items.append({
+                "uid": f"starlink-window-{obs_start.strftime('%Y%m%d')}@nishi-sanbashi",
+                "summary": "西桟橋で星空を見上げる夜",
+                "description": "衛星トレインは検出されていませんが、薄明の星空を楽しんで。",
+                "start": obs_start,
+                "end": obs_end,
+            })
+
+        # 次の新月期
+        tomorrow = obs_start.date() + timedelta(days=1)
+        dark_sky = find_next_dark_sky(tomorrow, max_days=60)
+        if dark_sky:
+            # 新月期の夜19:00〜翌01:00を代表時間に
+            month_day = dark_sky["date"]
+            try:
+                mm, dd = map(int, month_day.split("/"))
+                year = obs_start.year if mm >= obs_start.month else obs_start.year + 1
+                dk_start = datetime(year, mm, dd, 19, 0, tzinfo=JST)
+                dk_end = dk_start + timedelta(hours=6)
+                events_items.append({
+                    "uid": f"darksky-{dk_start.strftime('%Y%m%d')}@nishi-sanbashi",
+                    "summary": "新月期・星空の好条件（西桟橋）",
+                    "description": f"月輝面比 {dark_sky.get('illumination', '?')}%。月明かりが少ない夜。",
+                    "start": dk_start,
+                    "end": dk_end,
+                })
+            except (ValueError, KeyError):
+                pass
+    except Exception as e:
+        logger.warning("ics生成失敗: %s", e)
+
+    # iCalendar本文生成
+    now_utc = datetime.now(tz=timezone.utc)
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//StarlinkNishi//Taketomi//JP",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+    ]
+    for ev in events_items:
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:{ev['uid']}",
+            f"DTSTAMP:{_ics_fmt_utc(now_utc)}",
+            f"DTSTART:{_ics_fmt_utc(ev['start'])}",
+            f"DTEND:{_ics_fmt_utc(ev['end'])}",
+            f"SUMMARY:{_ics_escape(ev['summary'])}",
+            f"DESCRIPTION:{_ics_escape(ev['description'])}",
+            "LOCATION:竹富島・西桟橋",
+            "GEO:24.3237;124.0893",
+            "END:VEVENT",
+        ])
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(lines) + "\r\n"
+
+    return HTMLResponse(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="starlink-nishi.ics"'},
+    )
+
+
 # --- PWA ---
 @app.get("/manifest.json")
 async def manifest():
