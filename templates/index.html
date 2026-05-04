@@ -83,8 +83,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    padding: 3rem 1.5rem 5rem;
+    justify-content: flex-start;
+    padding: max(2rem, env(safe-area-inset-top)) 1.5rem 5rem;
     text-align: center;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -162,7 +162,7 @@
     font-size: var(--size-small);
     color: var(--ink-40);
     letter-spacing: 0.15em;
-    margin-bottom: 3rem;
+    margin-bottom: 2rem;
     font-feature-settings: "tnum" 1;
   }
 
@@ -171,8 +171,8 @@
      ========================================================== */
   .obs-index {
     max-width: 22rem;
-    margin: 0 auto 3.5rem;
-    padding: 2.2rem 1.6rem 1.8rem;
+    margin: 0 auto 2.5rem;
+    padding: 1.5rem 1.4rem 1.4rem;
     background:
       radial-gradient(ellipse at 50% 0%, rgba(255, 184, 107, 0.08), transparent 70%),
       linear-gradient(180deg, rgba(255, 184, 107, 0.04), rgba(255, 184, 107, 0.015));
@@ -201,11 +201,11 @@
     font-size: var(--size-micro);
     color: var(--ink-40);
     letter-spacing: 0.4em;
-    margin-bottom: 1rem;
+    margin-bottom: 0.6rem;
   }
   .obs-index-number {
     font-family: var(--font-tnum);
-    font-size: 5rem;
+    font-size: 3.6rem;
     font-weight: 100;
     color: var(--amber);
     letter-spacing: 0.02em;
@@ -219,14 +219,14 @@
     font-size: var(--size-tiny);
     color: var(--ink-40);
     letter-spacing: 0.3em;
-    margin-top: 0.2rem;
-    margin-bottom: 0.8rem;
+    margin-top: 0.15rem;
+    margin-bottom: 0.6rem;
   }
   .obs-index-bar {
     width: 70%;
     height: 2px;
     background: var(--ink-10);
-    margin: 0.4rem auto 0.6rem;
+    margin: 0.3rem auto 0.5rem;
     border-radius: 1px;
     overflow: hidden;
   }
@@ -241,35 +241,35 @@
     font-size: var(--size-base);
     color: var(--ink-100);
     letter-spacing: 0.2em;
-    margin-bottom: 1.4rem;
+    margin-bottom: 1rem;
   }
   .obs-index-divider {
     width: 2rem;
     height: 1px;
     background: var(--ink-20);
-    margin: 0 auto 1.2rem;
+    margin: 0 auto 0.9rem;
   }
   .obs-index-time {
     font-family: var(--font-tnum);
-    font-size: 1.3rem;
+    font-size: 1.2rem;
     font-weight: 200;
     color: var(--amber);
     letter-spacing: 0.06em;
-    margin-bottom: 0.4rem;
+    margin-bottom: 0.3rem;
     font-variant-numeric: tabular-nums;
   }
   .obs-index-direction {
     font-family: var(--font-mincho);
-    font-size: var(--size-base);
+    font-size: var(--size-small);
     color: var(--ink-80);
     letter-spacing: 0.1em;
-    margin-bottom: 0.8rem;
+    margin-bottom: 0.6rem;
   }
   .obs-index-advice {
     font-family: var(--font-mincho);
-    font-size: var(--size-small);
+    font-size: var(--size-tiny);
     color: var(--ink-60);
-    line-height: 1.9;
+    line-height: 1.8;
     letter-spacing: 0.05em;
     padding: 0 0.4rem;
   }
