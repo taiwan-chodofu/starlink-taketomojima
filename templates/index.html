@@ -853,6 +853,39 @@
     color: var(--ink-60);
     letter-spacing: 0.25em;
     animation: loadingPulse 2.4s ease-in-out infinite;
+    text-align: center;
+  }
+  .loading-text {
+    margin-bottom: 1.2rem;
+  }
+  .loading-progress-wrap {
+    animation: none;
+    max-width: 14rem;
+    margin: 0 auto;
+  }
+  .loading-progress-bar {
+    width: 100%;
+    height: 2px;
+    background: var(--ink-10);
+    border-radius: 1px;
+    overflow: hidden;
+    margin-bottom: 0.6rem;
+  }
+  .loading-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--amber-dim), var(--amber));
+    width: 0%;
+    transition: width 0.5s linear;
+    box-shadow: 0 0 6px rgba(255, 184, 107, 0.4);
+  }
+  .loading-progress-meta {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    color: var(--ink-40);
+    letter-spacing: 0.15em;
+    font-variant-numeric: tabular-nums;
   }
   @keyframes loadingPulse {
     0%, 100% { opacity: 0.4; }
@@ -917,7 +950,7 @@
   <div class="date">{{ target_date }}</div>
 
   <div id="content">
-    <div class="loading">衛星の声を聴いています</div>
+    <div class="loading">読み込み中<span class="loading-dots" aria-hidden="true">…</span></div>
   </div>
 </main>
 
@@ -1334,54 +1367,155 @@
   }
 
   // ==========================================================
-  // メインロード
+  // メインロード（リトライ・段階メッセージ対応）
   // ==========================================================
-  async function load() {
-    const el = document.getElementById('content');
-    try {
-      const r = await fetch('/api/tonight');
-      const d = await r.json();
+  const FETCH_TIMEOUT_MS = 120 * 1000;   // 最大120秒
+  const STAGE_TIMEOUTS = [15000, 45000]; // 15秒・45秒でメッセージ変更
 
+  function showLoadingStage(msg, opts) {
+    const el = document.getElementById('content');
+    if (!el) return;
+    const hasProgress = opts && opts.progress;
+    const progressHtml = hasProgress ? `
+      <div class="loading-progress-wrap" aria-hidden="true">
+        <div class="loading-progress-bar"><div class="loading-progress-fill" id="lp-fill"></div></div>
+        <div class="loading-progress-meta">
+          <span id="lp-elapsed">0:00</span>
+          <span id="lp-percent">0%</span>
+          <span id="lp-eta">約2分</span>
+        </div>
+      </div>
+    ` : '';
+    el.innerHTML = `
+      <div class="loading">
+        <div class="loading-text" id="lp-text">${escapeHtml(msg)}</div>
+        ${progressHtml}
+      </div>
+    `;
+  }
+
+  function updateLoadingText(msg) {
+    const el = document.getElementById('lp-text');
+    if (el) el.textContent = msg;
+  }
+
+  // 非線形プログレス: 30秒で75%、120秒で95%（Renderのスリープ復帰体感に合わせた設計）
+  function virtualProgress(elapsedMs) {
+    const t = elapsedMs / 1000;
+    // 1 - exp(-t / tau) で漸近する曲線。tau=19 で t=30 => 79%, t=120 => 99%
+    const raw = 1 - Math.exp(-t / 19);
+    return Math.min(0.98, raw) * 100;
+  }
+
+  function formatMMSS(ms) {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  function startProgressTicker(startAt) {
+    const fill = document.getElementById('lp-fill');
+    const elapsed = document.getElementById('lp-elapsed');
+    const percent = document.getElementById('lp-percent');
+    if (!fill || !elapsed || !percent) return null;
+    const tick = () => {
+      const f = document.getElementById('lp-fill');
+      const e = document.getElementById('lp-elapsed');
+      const p = document.getElementById('lp-percent');
+      if (!f || !e || !p) return;
+      const dt = Date.now() - startAt;
+      const pct = virtualProgress(dt);
+      f.style.width = pct + '%';
+      e.textContent = formatMMSS(dt);
+      p.textContent = Math.round(pct) + '%';
+    };
+    tick();
+    return setInterval(tick, 500);
+  }
+
+  function showErrorWithRetry(msg) {
+    const el = document.getElementById('content');
+    if (!el) return;
+    el.innerHTML = `
+      <div class="error">
+        <div class="status">${escapeHtml(msg)}</div>
+        <button class="ics-btn" id="retry-btn" type="button" style="margin-top:1.5rem">
+          もう一度試す
+        </button>
+      </div>
+    `;
+    const btn = document.getElementById('retry-btn');
+    if (btn) btn.addEventListener('click', load);
+  }
+
+  async function fetchWithTimeout() {
+    const controller = new AbortController();
+    const timers = [];
+    const startAt = Date.now();
+    const progressTimer = startProgressTicker(startAt);
+    if (progressTimer) timers.push(progressTimer);
+    timers.push(setTimeout(() => updateLoadingText('サーバーを起動しています…'), STAGE_TIMEOUTS[0]));
+    timers.push(setTimeout(() => updateLoadingText('もう少しお待ちください…'), STAGE_TIMEOUTS[1]));
+    const abortTimer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    timers.push(abortTimer);
+
+    try {
+      const r = await fetch('/api/tonight', { signal: controller.signal });
+      return await r.json();
+    } finally {
+      timers.forEach(t => { clearTimeout(t); clearInterval(t); });
+    }
+  }
+
+  async function load() {
+    showLoadingStage('読み込み中…', { progress: true });
+    try {
+      const d = await fetchWithTimeout();
       if (d.error) {
-        el.innerHTML = `<div class="error"><div class="status">${escapeHtml(d.error)}</div></div>`;
+        showErrorWithRetry(d.error);
         return;
       }
-
-      let html = '';
-      // 最上位に観測インデックスを常時表示
-      html += renderObservationIndex(d);
-
-      if (d.visible && d.result) {
-        html += renderVisible(d);
-      } else {
-        html += renderNotVisible(d);
-      }
-      if (d.moon) {
-        html += renderMoon(d.moon, d.events, d.tide, d.weather);
-      }
-
-      el.style.opacity = '0';
-      setTimeout(() => {
-        el.innerHTML = html;
-        el.style.opacity = '1';
-        if (d.visible && d.result && d.result.time_iso) {
-          startCountdown(d.result.time_iso);
-        }
-        attachMoonToggle();
-
-        // A1: コンパス連動
-        const idx = d.observation_index;
-        if (idx) {
-          const targetDeg = parseDirectionDeg(idx.best_direction);
-          if (targetDeg != null) setupCompass(targetDeg);
-          // A2: 観測時刻の監視
-          watchObsTime(idx.best_time_start);
-        }
-      }, 250);
-
+      renderAll(d);
     } catch (e) {
-      el.innerHTML = '<div class="error"><div class="status">データの取得に失敗しました</div></div>';
+      const msg = e.name === 'AbortError'
+        ? '応答が遅いようです。ネットワークをご確認ください'
+        : 'データの取得に失敗しました';
+      showErrorWithRetry(msg);
     }
+  }
+
+  function renderAll(d) {
+    const el = document.getElementById('content');
+    if (!el) return;
+    let html = '';
+    html += renderObservationIndex(d);
+
+    if (d.visible && d.result) {
+      html += renderVisible(d);
+    } else {
+      html += renderNotVisible(d);
+    }
+    if (d.moon) {
+      html += renderMoon(d.moon, d.events, d.tide, d.weather);
+    }
+
+    el.style.opacity = '0';
+    setTimeout(() => {
+      el.innerHTML = html;
+      el.style.opacity = '1';
+      if (d.visible && d.result && d.result.time_iso) {
+        startCountdown(d.result.time_iso);
+      }
+      attachMoonToggle();
+
+      // A1: コンパス連動
+      const idx = d.observation_index;
+      if (idx) {
+        const targetDeg = parseDirectionDeg(idx.best_direction);
+        if (targetDeg != null) setupCompass(targetDeg);
+        // A2: 観測時刻の監視
+        watchObsTime(idx.best_time_start);
+      }
+    }, 250);
   }
 
   document.addEventListener('DOMContentLoaded', load);
