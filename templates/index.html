@@ -5,28 +5,78 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#050608">
+<meta name="color-scheme" content="dark">
 <title>西桟橋 — Starlink</title>
 <link rel="manifest" href="/manifest.json">
 <style>
-  /* ------- 基本 ------- */
+  /* ==========================================================
+     西桟橋 Starlink Viewer — Design System v3
+     - Apple HIG: Clarity / Deference / Depth
+     - Japanese ma: 余白と静寂
+     - 天文観測: 暗順応アンバー（#ffb86b 系）で夜の目を守る
+     - WCAG AA 4.5:1 以上（重要情報）
+     ========================================================== */
+
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --ink-100: rgba(255,255,255,0.92);
-    --ink-80:  rgba(255,255,255,0.72);
-    --ink-60:  rgba(255,255,255,0.48);
-    --ink-40:  rgba(255,255,255,0.30);
-    --ink-20:  rgba(255,255,255,0.16);
-    --ink-10:  rgba(255,255,255,0.08);
-    --hairline: rgba(255,255,255,0.06);
+    /* ---- パレット：夜の階調 + アンバー（暗順応配慮） ---- */
+    --bg-0:      #05070a;          /* 最深 */
+    --bg-1:      #080b10;
+    --bg-2:      #0c1017;
+
+    --ink-100:   rgba(245, 238, 226, 0.94);   /* 主文字（わずかに暖色） */
+    --ink-80:    rgba(245, 238, 226, 0.72);
+    --ink-60:    rgba(245, 238, 226, 0.48);
+    --ink-40:    rgba(245, 238, 226, 0.28);
+    --ink-20:    rgba(245, 238, 226, 0.14);
+    --ink-10:    rgba(245, 238, 226, 0.07);
+    --hairline:  rgba(245, 238, 226, 0.06);
+
+    /* アンバー：暗所でも眩しくない数値強調色 */
+    --amber:     #ffb86b;
+    --amber-dim: #b87e47;
+    --amber-subtle: rgba(255, 184, 107, 0.15);
+
+    /* 季節感の空色（JSで動的更新） */
+    --sky-hue: 220;
+    --sky-sat: 40%;
+    --sky-light: 10%;
+
+    /* タイポ */
+    --font-mincho: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+    --font-sans:   -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    --font-tnum:   "SF Mono", ui-monospace, "Menlo", monospace;
+
+    /* タイポサイズ（黄金比 1.618） */
+    --size-hero:    7rem;     /* 時刻 */
+    --size-large:   1.618rem;
+    --size-base:    1rem;
+    --size-small:   0.8rem;
+    --size-tiny:    0.7rem;
+    --size-micro:   0.62rem;  /* ラベル */
+
+    /* モーション */
+    --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --dur-slow: 1.8s;
+    --dur-med:  1.0s;
+    --dur-fast: 0.3s;
+  }
+
+  /* ---- Reduce Motion 対応 ---- */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 
   html, body { height: 100%; }
 
   body {
-    font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP",
-                 -apple-system, BlinkMacSystemFont, serif;
+    font-family: var(--font-mincho);
     color: var(--ink-100);
     min-height: 100vh;
     min-height: 100dvh;
@@ -34,302 +84,490 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 2.5rem 1.5rem 4rem;
+    padding: 3rem 1.5rem 5rem;
     text-align: center;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
     position: relative;
 
-    /* 時刻連動背景（JSで --sky-hue / --sky-dark を上書き） */
+    /* 時刻連動背景: 下から上へ夜空が立ち上がる */
     background:
-      radial-gradient(ellipse 120% 80% at 50% 120%,
-        hsla(var(--sky-hue, 220), 40%, 12%, 1) 0%,
-        #000 70%);
+      radial-gradient(ellipse 130% 70% at 50% 105%,
+        hsla(var(--sky-hue), var(--sky-sat), var(--sky-light), 1) 0%,
+        var(--bg-0) 65%);
     background-attachment: fixed;
-    transition: background 1.2s ease;
+    background-color: var(--bg-0);
+    transition: background 1.5s var(--ease-out);
+    font-feature-settings: "palt" 1, "pwid" 1;
   }
 
-  /* ------- 星（ランダムに薄く光る） ------- */
+  /* ---- 星（単一レイヤー・瞬きのみ） ---- */
   .stars {
     position: fixed;
     inset: 0;
     pointer-events: none;
-    opacity: 0.7;
     z-index: 0;
-  }
-  .stars::before, .stars::after {
-    content: "";
-    position: absolute;
-    inset: 0;
     background-image:
-      radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,.5), transparent 50%),
-      radial-gradient(1px 1px at 75% 15%, rgba(255,255,255,.4), transparent 50%),
-      radial-gradient(1px 1px at 50% 80%, rgba(255,255,255,.3), transparent 50%),
-      radial-gradient(1px 1px at 10% 70%, rgba(255,255,255,.4), transparent 50%),
-      radial-gradient(1px 1px at 90% 60%, rgba(255,255,255,.3), transparent 50%),
-      radial-gradient(1px 1px at 40% 10%, rgba(255,255,255,.4), transparent 50%),
-      radial-gradient(1px 1px at 60% 50%, rgba(255,255,255,.25), transparent 50%),
-      radial-gradient(1px 1px at 30% 90%, rgba(255,255,255,.35), transparent 50%),
-      radial-gradient(1px 1px at 85% 85%, rgba(255,255,255,.3), transparent 50%),
-      radial-gradient(1px 1px at 15% 45%, rgba(255,255,255,.25), transparent 50%);
-    animation: twinkle 7s ease-in-out infinite;
-  }
-  .stars::after {
-    animation-delay: -3.5s;
-    opacity: 0.5;
+      radial-gradient(0.8px 0.8px at 18% 24%, rgba(255,240,220,.6), transparent 52%),
+      radial-gradient(0.8px 0.8px at 73% 16%, rgba(255,240,220,.5), transparent 52%),
+      radial-gradient(0.8px 0.8px at 52% 78%, rgba(255,240,220,.4), transparent 52%),
+      radial-gradient(0.8px 0.8px at 12% 68%, rgba(255,240,220,.5), transparent 52%),
+      radial-gradient(1px   1px   at 88% 55%, rgba(255,240,220,.35),transparent 52%),
+      radial-gradient(0.8px 0.8px at 38% 12%, rgba(255,240,220,.45),transparent 52%),
+      radial-gradient(0.8px 0.8px at 62% 46%, rgba(255,240,220,.3), transparent 52%),
+      radial-gradient(0.8px 0.8px at 28% 88%, rgba(255,240,220,.4), transparent 52%),
+      radial-gradient(0.8px 0.8px at 84% 82%, rgba(255,240,220,.35),transparent 52%),
+      radial-gradient(0.8px 0.8px at 8%  38%, rgba(255,240,220,.3), transparent 52%);
+    animation: twinkle 9s ease-in-out infinite;
+    opacity: 0.75;
   }
   @keyframes twinkle {
-    0%, 100% { opacity: 0.7; }
-    50% { opacity: 0.35; }
+    0%, 100% { opacity: 0.8; }
+    50%      { opacity: 0.45; }
   }
 
-  /* ------- レイアウト ------- */
+  /* ==========================================================
+     レイアウト
+     ========================================================== */
   main {
     position: relative;
     z-index: 1;
-    max-width: 28rem;
+    max-width: 32rem;
     width: 100%;
   }
 
+  /* ---- ヘッダー（Now レイヤー） ---- */
   .place {
-    font-size: 0.8rem;
-    letter-spacing: 0.5em;
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    letter-spacing: 0.55em;
     color: var(--ink-40);
-    margin-bottom: 0.5rem;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    margin-bottom: 0.4rem;
+    text-transform: uppercase;
+  }
+  .place::first-letter {
+    /* 日本語なので機能しない。英字混入時の保険 */
+  }
+  .place-jp {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    letter-spacing: 0.5em;
+    color: var(--ink-60);
+    margin-bottom: 0.6rem;
   }
 
   .date {
-    font-size: 0.85rem;
+    font-family: var(--font-tnum);
+    font-size: var(--size-small);
     color: var(--ink-40);
-    margin-bottom: 4rem;
-    letter-spacing: 0.1em;
-    font-feature-settings: "tnum";
+    letter-spacing: 0.15em;
+    margin-bottom: 3rem;
+    font-feature-settings: "tnum" 1;
   }
 
-  /* ------- ローディング ------- */
-  .loading {
-    font-size: 0.85rem;
-    color: var(--ink-40);
-    letter-spacing: 0.2em;
+  /* ==========================================================
+     Observation Index（最上位バッジ）
+     ========================================================== */
+  .obs-index {
+    max-width: 22rem;
+    margin: 0 auto 3.5rem;
+    padding: 2.2rem 1.6rem 1.8rem;
+    background:
+      radial-gradient(ellipse at 50% 0%, rgba(255, 184, 107, 0.08), transparent 70%),
+      linear-gradient(180deg, rgba(255, 184, 107, 0.04), rgba(255, 184, 107, 0.015));
+    border: 1px solid rgba(255, 184, 107, 0.2);
+    border-radius: 8px;
+    text-align: center;
+    animation: fadeUp 1.2s var(--ease-out) both;
+    position: relative;
   }
-  .loading .dots span {
+  .obs-index.has-train::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: 8px;
+    border: 1px solid var(--amber);
+    opacity: 0;
+    animation: indexPulse 3.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes indexPulse {
+    0%, 100% { opacity: 0; }
+    50%      { opacity: 0.6; }
+  }
+  .obs-index-label {
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    color: var(--ink-40);
+    letter-spacing: 0.4em;
+    margin-bottom: 1rem;
+  }
+  .obs-index-number {
+    font-family: var(--font-tnum);
+    font-size: 5rem;
+    font-weight: 100;
+    color: var(--amber);
+    letter-spacing: 0.02em;
+    line-height: 1;
+    text-shadow: 0 0 30px rgba(255, 184, 107, 0.22);
+    font-variant-numeric: tabular-nums;
     display: inline-block;
-    opacity: 0.2;
-    animation: blink 1.4s infinite;
   }
-  .loading .dots span:nth-child(2) { animation-delay: .2s; }
-  .loading .dots span:nth-child(3) { animation-delay: .4s; }
-  @keyframes blink {
-    0%, 80%, 100% { opacity: 0.2; }
-    40% { opacity: 1; }
+  .obs-index-unit {
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-40);
+    letter-spacing: 0.3em;
+    margin-top: 0.2rem;
+    margin-bottom: 0.8rem;
+  }
+  .obs-index-bar {
+    width: 70%;
+    height: 2px;
+    background: var(--ink-10);
+    margin: 0.4rem auto 0.6rem;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .obs-index-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--amber-dim), var(--amber));
+    transition: width 1.2s var(--ease-out);
+    box-shadow: 0 0 6px rgba(255, 184, 107, 0.5);
+  }
+  .obs-index-grade {
+    font-family: var(--font-mincho);
+    font-size: var(--size-base);
+    color: var(--ink-100);
+    letter-spacing: 0.2em;
+    margin-bottom: 1.4rem;
+  }
+  .obs-index-divider {
+    width: 2rem;
+    height: 1px;
+    background: var(--ink-20);
+    margin: 0 auto 1.2rem;
+  }
+  .obs-index-time {
+    font-family: var(--font-tnum);
+    font-size: 1.3rem;
+    font-weight: 200;
+    color: var(--amber);
+    letter-spacing: 0.06em;
+    margin-bottom: 0.4rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .obs-index-direction {
+    font-family: var(--font-mincho);
+    font-size: var(--size-base);
+    color: var(--ink-80);
+    letter-spacing: 0.1em;
+    margin-bottom: 0.8rem;
+  }
+  .obs-index-advice {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: var(--ink-60);
+    line-height: 1.9;
+    letter-spacing: 0.05em;
+    padding: 0 0.4rem;
   }
 
-  /* ------- 可視時 ------- */
-  .visible { animation: fadeUp 1.2s ease both; }
+  /* ==========================================================
+     Tonight レイヤー — 可視時
+     ========================================================== */
+  .visible {
+    animation: fadeUp 1.4s var(--ease-out) both;
+  }
   @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(8px); }
+    from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
   }
 
   .visible .status {
-    font-size: 0.95rem;
+    font-family: var(--font-mincho);
+    font-size: var(--size-base);
     color: var(--ink-60);
     margin-bottom: 3rem;
     letter-spacing: 0.15em;
-    line-height: 1.8;
+    line-height: 2;
   }
 
+  /* 時刻：主役 */
   .visible .time {
-    font-size: 5.5rem;
+    font-family: var(--font-tnum);
+    font-size: var(--size-hero);
     font-weight: 100;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
     line-height: 1;
-    margin-bottom: 0.8rem;
-    color: var(--ink-100);
-    font-feature-settings: "tnum";
+    margin-bottom: 1rem;
+    color: var(--amber);
+    font-feature-settings: "tnum" 1;
+    text-shadow: 0 0 40px rgba(255, 184, 107, 0.18);
   }
 
   .visible .countdown {
-    font-size: 0.8rem;
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
     color: var(--ink-40);
-    letter-spacing: 0.2em;
+    letter-spacing: 0.25em;
     margin-bottom: 3rem;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    font-feature-settings: "tnum";
+    font-feature-settings: "tnum" 1;
     min-height: 1rem;
   }
 
-  /* 可視スコア（0-100） */
+  /* 可視スコア（アンバーバー） */
   .score-bar {
-    width: 60%;
-    max-width: 14rem;
+    width: 14rem;
+    max-width: 60%;
     height: 2px;
     background: var(--ink-10);
-    margin: 0 auto 0.6rem;
+    margin: 0 auto 0.7rem;
     border-radius: 1px;
     overflow: hidden;
   }
   .score-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--ink-40), var(--ink-100));
-    transition: width 1.2s ease-out;
+    background: linear-gradient(90deg, var(--amber-dim), var(--amber));
+    transition: width var(--dur-slow) var(--ease-out);
+    box-shadow: 0 0 8px rgba(255, 184, 107, 0.4);
   }
   .score-label {
-    font-size: 0.7rem;
-    color: var(--ink-40);
-    letter-spacing: 0.2em;
-    margin-bottom: 2.4rem;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    font-feature-settings: "tnum";
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-60);
+    letter-spacing: 0.25em;
+    margin-bottom: 3rem;
+    font-feature-settings: "tnum" 1;
+  }
+  .score-label strong {
+    color: var(--amber);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    margin: 0 0.15em;
   }
   .score-unit {
-    color: var(--ink-20);
-    margin-left: 0.2rem;
-  }
-
-  /* 他の候補 */
-  .others {
-    margin-top: 3.5rem;
-    padding-top: 1.8rem;
-    border-top: 1px solid var(--hairline);
-    text-align: left;
-    max-width: 20rem;
-    margin-left: auto;
-    margin-right: auto;
-  }
-  .others-label {
-    font-size: 0.7rem;
     color: var(--ink-40);
-    letter-spacing: 0.3em;
-    margin-bottom: 0.8rem;
-    text-align: center;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  }
-  .other-row {
-    display: grid;
-    grid-template-columns: 3rem 1fr auto auto;
-    gap: 0.6rem;
-    padding: 0.4rem 0;
-    font-size: 0.8rem;
-    color: var(--ink-60);
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    font-feature-settings: "tnum";
-    align-items: baseline;
-  }
-  .other-time { color: var(--ink-80); }
-  .other-dir  { font-size: 0.75rem; color: var(--ink-60); }
-  .other-count { font-size: 0.7rem; color: var(--ink-40); }
-  .other-score {
-    font-size: 0.75rem;
-    color: var(--ink-60);
-    min-width: 1.6rem;
-    text-align: right;
+    font-size: 0.8em;
+    margin-left: 0.2em;
   }
 
+  /* 方角 */
   .visible .direction {
-    font-size: 1.15rem;
+    font-family: var(--font-mincho);
+    font-size: var(--size-large);
     line-height: 2;
-    color: var(--ink-80);
+    color: var(--ink-100);
+    letter-spacing: 0.08em;
   }
   .visible .direction .context {
-    font-size: 0.75rem;
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
     color: var(--ink-40);
-    margin-left: 0.4rem;
+    margin-left: 0.6rem;
+    letter-spacing: 0.15em;
   }
 
-  /* 流れ線（start → end） */
+  /* 流れ線 */
   .visible .flow {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 1rem;
-    margin: 1.4rem 0;
+    margin: 1.6rem 0;
   }
   .visible .flow .line {
-    flex: 0 0 3.5rem;
+    flex: 0 0 4rem;
     height: 1px;
-    background: linear-gradient(90deg, var(--ink-20), var(--ink-40), var(--ink-20));
+    background: linear-gradient(90deg, transparent, var(--amber-dim), transparent);
     position: relative;
     overflow: hidden;
   }
   .visible .flow .line::after {
     content: "";
     position: absolute;
-    top: 0; left: -30%;
-    width: 30%; height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,.9), transparent);
-    animation: sweep 3.6s ease-in-out infinite;
+    top: 0; left: -40%;
+    width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    animation: sweep 4.2s var(--ease-out) infinite;
   }
   @keyframes sweep {
-    0% { left: -30%; }
-    100% { left: 130%; }
+    0%   { left: -40%; }
+    100% { left: 140%; }
   }
 
   .visible .count {
-    font-size: 0.75rem;
-    color: var(--ink-40);
-    margin-top: 3.5rem;
-    letter-spacing: 0.15em;
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-60);
+    margin-top: 3rem;
+    letter-spacing: 0.2em;
+    font-feature-settings: "tnum" 1;
   }
 
-  /* ------- 不可視時 ------- */
-  .not-visible .status {
-    font-size: 1.15rem;
+  /* ---- 他の候補（Later レイヤー1） ---- */
+  .others {
+    margin-top: 4rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--hairline);
+    animation: fadeUp 2s var(--ease-out) both;
+  }
+  .others-label {
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    color: var(--ink-40);
+    letter-spacing: 0.4em;
+    margin-bottom: 1.4rem;
+    text-align: center;
+  }
+  .other-row {
+    display: grid;
+    grid-template-columns: 3.2rem 1fr 2.5rem 2rem;
+    gap: 1rem;
+    padding: 0.6rem 0.4rem;
+    font-family: var(--font-sans);
+    font-size: var(--size-small);
+    color: var(--ink-80);
+    font-feature-settings: "tnum" 1;
+    align-items: baseline;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .other-row:last-child { border-bottom: none; }
+  .other-time {
+    color: var(--amber);
+    font-variant-numeric: tabular-nums;
+  }
+  .other-dir {
+    font-size: var(--size-tiny);
     color: var(--ink-60);
-    line-height: 2;
     letter-spacing: 0.1em;
-    animation: fadeUp 1.2s ease both;
+  }
+  .other-count {
+    font-size: var(--size-tiny);
+    color: var(--ink-40);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .other-score {
+    font-family: var(--font-tnum);
+    font-size: var(--size-tiny);
+    color: var(--amber-dim);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ==========================================================
+     Tonight レイヤー — 不可視時
+     ========================================================== */
+  .not-visible .status {
+    font-family: var(--font-mincho);
+    font-size: var(--size-large);
+    color: var(--ink-80);
+    line-height: 2.2;
+    letter-spacing: 0.12em;
+    animation: fadeUp 1.4s var(--ease-out) both;
+  }
+
+  /* 見えない理由カード */
+  .reason-card {
+    margin-top: 2.6rem;
+    padding: 1.8rem 1.4rem;
+    background: var(--amber-subtle);
+    border: 1px solid rgba(255, 184, 107, 0.2);
+    border-radius: 4px;
+    max-width: 22rem;
+    margin-left: auto;
+    margin-right: auto;
+    animation: fadeUp 1.6s var(--ease-out) both;
+  }
+  .reason-icon {
+    font-size: 1.8rem;
+    margin-bottom: 0.6rem;
+    line-height: 1;
+  }
+  .reason-title {
+    font-family: var(--font-mincho);
+    font-size: var(--size-base);
+    color: var(--amber);
+    margin-bottom: 0.7rem;
+    letter-spacing: 0.1em;
+  }
+  .reason-detail {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: var(--ink-80);
+    line-height: 1.9;
+    letter-spacing: 0.05em;
   }
 
   .next-hint {
+    margin-top: 4rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--hairline);
+    animation: fadeUp 1.8s var(--ease-out) both;
+  }
+  .next-label {
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
+    color: var(--ink-40);
+    letter-spacing: 0.4em;
+    margin-bottom: 1.2rem;
+  }
+  .next-date {
+    font-family: var(--font-mincho);
+    font-size: var(--size-large);
+    color: var(--amber);
+    margin-bottom: 0.6rem;
+    letter-spacing: 0.05em;
+    font-variant-numeric: tabular-nums;
+  }
+  .next-dir {
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-60);
+    letter-spacing: 0.15em;
+  }
+
+  /* ==========================================================
+     Later レイヤー2 — 月・空・潮（折りたたみ）
+     ========================================================== */
+  .moon-info {
     margin-top: 3.5rem;
     padding-top: 2rem;
     border-top: 1px solid var(--hairline);
-    animation: fadeUp 1.6s ease both;
-  }
-  .next-label {
-    font-size: 0.7rem;
-    color: var(--ink-40);
-    letter-spacing: 0.3em;
-    margin-bottom: 1rem;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  }
-  .next-date {
-    font-size: 1rem;
-    color: var(--ink-60);
-    margin-bottom: 0.4rem;
-    font-feature-settings: "tnum";
-  }
-  .next-dir {
-    font-size: 0.8rem;
-    color: var(--ink-40);
-  }
-
-  /* ------- 月情報（折りたたみ） ------- */
-  .moon-info {
-    margin-top: 3rem;
-    padding-top: 1.8rem;
-    border-top: 1px solid var(--hairline);
-    animation: fadeUp 2s ease both;
+    animation: fadeUp 2.2s var(--ease-out) both;
   }
   .moon-toggle {
     background: none;
     border: none;
-    color: var(--ink-40);
-    font-size: 0.75rem;
-    letter-spacing: 0.3em;
+    color: var(--ink-80);
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    letter-spacing: 0.25em;
     cursor: pointer;
-    padding: 0.5rem 1rem;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    transition: color 0.3s;
+    padding: 0.8rem 1.2rem;
+    transition: color var(--dur-fast);
+    border-radius: 2px;
   }
-  .moon-toggle:hover { color: var(--ink-60); }
+  .moon-toggle:hover { color: var(--ink-100); }
+  .moon-toggle:focus-visible {
+    outline: 1px solid var(--amber-dim);
+    outline-offset: 4px;
+  }
+  .moon-toggle-preview {
+    color: var(--ink-60);
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    margin-left: 0.8rem;
+    font-variant-numeric: tabular-nums;
+  }
   .moon-toggle::after {
     content: "▾";
-    margin-left: 0.5rem;
+    margin-left: 0.8rem;
     display: inline-block;
-    transition: transform 0.3s;
+    transition: transform var(--dur-fast);
+    color: var(--ink-40);
   }
   .moon-toggle[aria-expanded="true"]::after { transform: rotate(180deg); }
 
@@ -337,127 +575,229 @@
     max-height: 0;
     overflow: hidden;
     opacity: 0;
-    transition: max-height 0.4s ease, opacity 0.4s ease;
+    transition: max-height 0.5s var(--ease-out), opacity 0.5s var(--ease-out);
   }
   .moon-detail.open {
-    max-height: 8rem;
+    max-height: 36rem;
     opacity: 1;
-    margin-top: 1rem;
-  }
-  .moon-phase {
-    font-size: 1rem;
-    color: var(--ink-60);
-    margin-bottom: 0.4rem;
-  }
-  .moon-meta {
-    font-size: 0.75rem;
-    color: var(--ink-40);
-    margin-bottom: 0.3rem;
-  }
-  .moon-note {
-    font-size: 0.7rem;
-    color: var(--ink-40);
-    letter-spacing: 0.1em;
+    margin-top: 1.4rem;
   }
 
-  /* ------- 空と潮の時刻グリッド ------- */
+  /* 空の時刻グリッド */
   .sky-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.6rem 1.2rem;
-    margin-bottom: 1.2rem;
-    padding-bottom: 1rem;
+    gap: 0.8rem 1.4rem;
+    margin-bottom: 1.6rem;
+    padding-bottom: 1.4rem;
     border-bottom: 1px solid var(--hairline);
   }
-  .sky-grid .sky-cell {
+  .sky-cell {
     display: flex;
     flex-direction: column;
     align-items: center;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: var(--font-sans);
+    padding: 0.3rem 0;
   }
-  .sky-grid .sky-cell:last-child {
-    grid-column: span 2;
-  }
+  .sky-cell:last-child { grid-column: span 2; }
   .sky-label {
-    font-size: 0.65rem;
+    font-size: var(--size-micro);
     color: var(--ink-40);
-    letter-spacing: 0.15em;
-    margin-bottom: 0.2rem;
+    letter-spacing: 0.25em;
+    margin-bottom: 0.35rem;
   }
   .sky-time {
-    font-size: 0.95rem;
-    color: var(--ink-80);
-    font-feature-settings: "tnum";
+    font-family: var(--font-tnum);
+    font-size: var(--size-base);
+    color: var(--ink-100);
+    font-feature-settings: "tnum" 1;
+    font-variant-numeric: tabular-nums;
   }
 
+  /* 月サマリー */
   .moon-summary {
-    padding-bottom: 1rem;
-    margin-bottom: 1rem;
+    padding-bottom: 1.4rem;
+    margin-bottom: 1.4rem;
     border-bottom: 1px solid var(--hairline);
+    text-align: center;
+  }
+  .moon-phase {
+    font-family: var(--font-mincho);
+    font-size: var(--size-large);
+    color: var(--ink-100);
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.08em;
+  }
+  .moon-meta {
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    color: var(--ink-60);
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.2em;
+    font-variant-numeric: tabular-nums;
+  }
+  .moon-note {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: var(--ink-60);
+    letter-spacing: 0.15em;
+    line-height: 1.8;
   }
 
+  /* 天候（Open-Meteo） */
+  .weather-block {
+    padding: 1rem 0 1.2rem;
+    margin-bottom: 1.2rem;
+    border-bottom: 1px solid var(--hairline);
+    text-align: center;
+  }
+  .weather-line {
+    display: flex;
+    justify-content: center;
+    align-items: baseline;
+    gap: 0.8rem;
+    margin-bottom: 0.4rem;
+    font-family: var(--font-sans);
+  }
+  .weather-icon {
+    font-size: 1.2rem;
+  }
+  .weather-state {
+    font-family: var(--font-mincho);
+    font-size: var(--size-base);
+    color: var(--ink-100);
+    letter-spacing: 0.1em;
+  }
+  .weather-cloud {
+    font-size: var(--size-tiny);
+    color: var(--amber);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.15em;
+  }
+  .weather-note {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: var(--ink-60);
+    letter-spacing: 0.1em;
+    line-height: 1.8;
+  }
+  .weather-range {
+    color: var(--ink-40);
+    font-family: var(--font-sans);
+    font-size: var(--size-tiny);
+    margin-left: 0.4em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 潮汐 */
   .tide-block {
     text-align: left;
-    padding-left: 0.8rem;
+    max-width: 18rem;
+    margin: 0 auto;
   }
   .tide-list {
     list-style: none;
     padding: 0;
-    margin: 0 0 0.5rem 0;
-    font-size: 0.8rem;
-    color: var(--ink-60);
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    font-feature-settings: "tnum";
+    margin: 0 0 0.7rem 0;
+    font-family: var(--font-sans);
+    font-size: var(--size-small);
+    color: var(--ink-80);
+    font-feature-settings: "tnum" 1;
   }
   .tide-list li {
-    padding: 0.15rem 0;
-    display: flex;
-    justify-content: space-between;
-    max-width: 14rem;
-    margin: 0 auto;
+    padding: 0.3rem 0;
+    display: grid;
+    grid-template-columns: 3rem 1fr auto;
+    gap: 0.8rem;
+    align-items: baseline;
+    border-bottom: 1px dotted var(--hairline);
+  }
+  .tide-list li:last-child { border-bottom: none; }
+  .tide-kind {
+    color: var(--ink-60);
+    font-size: var(--size-tiny);
+    letter-spacing: 0.15em;
+  }
+  .tide-time {
+    color: var(--ink-100);
+    font-variant-numeric: tabular-nums;
   }
   .tide-cm {
     color: var(--ink-40);
-    font-size: 0.75rem;
+    font-size: var(--size-tiny);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
   .tide-note {
-    font-size: 0.65rem;
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
     color: var(--ink-40);
-    letter-spacing: 0.1em;
+    letter-spacing: 0.2em;
     text-align: center;
-    margin-top: 0.5rem;
+    margin-top: 0.7rem;
   }
 
-  .moon-detail.open {
-    max-height: 32rem;
+  /* ==========================================================
+     ローディング
+     ========================================================== */
+  .loading {
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: var(--ink-60);
+    letter-spacing: 0.25em;
+    animation: loadingPulse 2.4s ease-in-out infinite;
+  }
+  @keyframes loadingPulse {
+    0%, 100% { opacity: 0.4; }
+    50%      { opacity: 0.9; }
   }
 
-  /* ------- エラー ------- */
+  /* ==========================================================
+     エラー
+     ========================================================== */
   .error .status {
-    font-size: 0.95rem;
-    color: rgba(255, 180, 180, 0.6);
-    letter-spacing: 0.1em;
+    font-family: var(--font-mincho);
+    font-size: var(--size-small);
+    color: rgba(255, 170, 140, 0.7);
+    letter-spacing: 0.15em;
   }
 
-  /* ------- フッター ------- */
+  /* ==========================================================
+     フッター
+     ========================================================== */
   footer {
     position: fixed;
-    bottom: 1.2rem;
+    bottom: 1.5rem;
     left: 0; right: 0;
-    font-size: 0.65rem;
+    font-family: var(--font-sans);
+    font-size: var(--size-micro);
     color: var(--ink-20);
-    letter-spacing: 0.3em;
+    letter-spacing: 0.45em;
     text-align: center;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
     z-index: 1;
   }
 
-  /* ------- レスポンシブ ------- */
+  /* ==========================================================
+     レスポンシブ
+     ========================================================== */
   @media (min-width: 600px) {
-    .visible .time { font-size: 7rem; }
-    .visible .direction { font-size: 1.3rem; }
-    .place { font-size: 0.9rem; }
+    :root {
+      --size-hero:  8.5rem;
+    }
+    .visible .direction { font-size: 1.8rem; }
+    .place-jp { font-size: 0.9rem; }
   }
+
+  @media (max-width: 400px) {
+    :root {
+      --size-hero:  5.2rem;
+    }
+    body { padding: 2rem 1.2rem 4.5rem; }
+    .date { margin-bottom: 3.5rem; }
+  }
+
+  /* トランジション基本 */
+  #content { transition: opacity var(--dur-med) var(--ease-out); }
 </style>
 </head>
 <body>
@@ -465,14 +805,12 @@
 <div class="stars" aria-hidden="true"></div>
 
 <main>
-  <div class="place">竹富島・西桟橋</div>
+  <div class="place">TAKETOMI · NISHI-SANBASHI</div>
+  <div class="place-jp">竹富島・西桟橋</div>
   <div class="date">{{ target_date }}</div>
 
   <div id="content">
-    <div class="loading">
-      <span>衛星を探しています</span>
-      <span class="dots"><span>.</span><span>.</span><span>.</span></span>
-    </div>
+    <div class="loading">衛星の声を聴いています</div>
   </div>
 </main>
 
@@ -482,27 +820,43 @@
 (() => {
   'use strict';
 
-  // ---------- 時刻連動背景 ----------
-  // 18時台: 夕焼けの名残り（hue 20, 濃い茜）
-  // 19時台: 薄明の群青（hue 220）
-  // 20時以降: ほぼ純黒
+  // ==========================================================
+  // 時刻連動背景（季節感ハイライト）
+  // 18:00-18:45: 夕焼け残照（茜, hue 20, sat高, light 12%）
+  // 18:45-19:30: 薄明（群青, hue 240, sat中, light 11%）
+  // 19:30-22:00: 真夜中（深い青, hue 220, sat 30%, light 8%）
+  // 22:00-  5:00: 漆黒（hue 220, sat 20%, light 5%）
+  //  5:00-  6:00: 夜明け前（hue 200, sat 35%, light 10%）
+  //  6:00- 17:30: 昼（薄く明るく）
+  // ==========================================================
   function updateSky() {
     const now = new Date();
     const h = now.getHours() + now.getMinutes() / 60;
-    let hue, note;
-    if (h >= 17 && h < 18.5) {       // 夕焼け残照
-      hue = 20;
-    } else if (h >= 18.5 && h < 19.5) { // 薄明
-      hue = 250;
-    } else {                            // 夜
-      hue = 220;
+    let hue, sat, light;
+    if (h >= 18 && h < 18.75) {
+      hue = 20;  sat = 50; light = 12;
+    } else if (h >= 18.75 && h < 19.5) {
+      hue = 250; sat = 45; light = 11;
+    } else if (h >= 19.5 && h < 22) {
+      hue = 220; sat = 30; light = 8;
+    } else if (h >= 22 || h < 5) {
+      hue = 220; sat = 20; light = 5;
+    } else if (h >= 5 && h < 6) {
+      hue = 200; sat = 35; light = 10;
+    } else {
+      hue = 210; sat = 25; light = 7;
     }
-    document.documentElement.style.setProperty('--sky-hue', hue);
+    const r = document.documentElement;
+    r.style.setProperty('--sky-hue', hue);
+    r.style.setProperty('--sky-sat', sat + '%');
+    r.style.setProperty('--sky-light', light + '%');
   }
   updateSky();
   setInterval(updateSky, 60 * 1000);
 
-  // ---------- カウントダウン ----------
+  // ==========================================================
+  // カウントダウン
+  // ==========================================================
   let countdownTimer = null;
   function startCountdown(isoTime) {
     const target = new Date(isoTime);
@@ -514,6 +868,7 @@
       const diffMs = target - now;
       if (diffMs <= 0) {
         el.textContent = 'NOW — 空を見上げて';
+        el.style.color = 'var(--amber)';
         clearInterval(countdownTimer);
         return;
       }
@@ -533,7 +888,9 @@
     countdownTimer = setInterval(tick, 1000);
   }
 
-  // ---------- 月情報トグル ----------
+  // ==========================================================
+  // 月情報トグル
+  // ==========================================================
   function attachMoonToggle() {
     const btn = document.querySelector('.moon-toggle');
     const detail = document.querySelector('.moon-detail');
@@ -544,7 +901,9 @@
     });
   }
 
-  // ---------- レンダリング ----------
+  // ==========================================================
+  // 安全なエスケープ
+  // ==========================================================
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;',
@@ -552,17 +911,49 @@
     }[c]));
   }
 
+  // ==========================================================
+  // 観測インデックス（Observation Index）カード
+  // ==========================================================
+  function renderObservationIndex(d) {
+    const idx = d.observation_index;
+    if (!idx) return '';
+
+    const hasTrain = idx.has_train;
+    const pulseClass = hasTrain ? ' has-train' : '';
+
+    return `
+      <div class="obs-index${pulseClass}" role="status" aria-live="polite">
+        <div class="obs-index-label">OBSERVATION INDEX</div>
+        <div class="obs-index-number" aria-label="観測しやすさ ${escapeHtml(idx.score)}点">${escapeHtml(idx.score)}</div>
+        <div class="obs-index-unit">/ 100</div>
+        <div class="obs-index-bar" aria-hidden="true">
+          <div class="obs-index-fill" style="width:${idx.score}%"></div>
+        </div>
+        <div class="obs-index-grade">${escapeHtml(idx.grade_jp)}</div>
+        <div class="obs-index-divider" aria-hidden="true"></div>
+        <div class="obs-index-time">${escapeHtml(idx.best_time_start)} 〜 ${escapeHtml(idx.best_time_end)}</div>
+        <div class="obs-index-direction">${escapeHtml(idx.best_direction)}</div>
+        <div class="obs-index-advice">${escapeHtml(idx.advice)}</div>
+      </div>
+    `;
+  }
+
+  // ==========================================================
+  // 可視時レンダー
+  // ==========================================================
   function renderVisible(d) {
     const s = d.result;
     const others = (d.all_trains || []).slice(1);
     const scoreBar = (s.score !== undefined)
-      ? `<div class="score-bar" aria-label="可視スコア ${s.score}/100"><div class="score-fill" style="width:${s.score}%"></div></div>
-         <div class="score-label">見やすさ ${s.score}<span class="score-unit">/100</span></div>`
+      ? `<div class="score-bar" role="progressbar" aria-valuenow="${s.score}" aria-valuemin="0" aria-valuemax="100" aria-label="可視スコア">
+           <div class="score-fill" style="width:${s.score}%"></div>
+         </div>
+         <div class="score-label">見やすさ <strong>${escapeHtml(s.score)}</strong><span class="score-unit">/100</span></div>`
       : '';
 
     const othersHtml = others.length > 0
       ? `<div class="others">
-           <div class="others-label">他の候補</div>
+           <div class="others-label">OTHER CANDIDATES</div>
            ${others.map(o => `
              <div class="other-row">
                <span class="other-time">${escapeHtml(o.time_str)}</span>
@@ -584,8 +975,8 @@
           <span class="context">（${escapeHtml(s.start_context)}）</span>
           を見る
         </div>
-        <div class="flow">
-          <span class="line" aria-hidden="true"></span>
+        <div class="flow" aria-hidden="true">
+          <span class="line"></span>
         </div>
         <div class="direction">${escapeHtml(s.end_dir)} へ流れる</div>
         <div class="count">約 ${escapeHtml(s.sat_count)} 機の連なり</div>
@@ -594,8 +985,24 @@
     `;
   }
 
+  // ==========================================================
+  // 不可視時レンダー
+  // ==========================================================
   function renderNotVisible(d) {
     let html = '<div class="not-visible"><div class="status">今夜はスターリンクが<br>西桟橋から見えなそうです</div></div>';
+
+    // 見えない理由
+    if (d.reason) {
+      const r = d.reason;
+      html += `
+        <div class="reason-card" role="note">
+          <div class="reason-icon" aria-hidden="true">${escapeHtml(r.icon)}</div>
+          <div class="reason-title">${escapeHtml(r.title)}</div>
+          <div class="reason-detail">${escapeHtml(r.detail)}</div>
+        </div>
+      `;
+    }
+
     if (d.next_visible) {
       const n = d.next_visible;
       html += `
@@ -618,26 +1025,52 @@
     return html;
   }
 
-  function renderMoon(m, events, tide) {
+  // ==========================================================
+  // 月・空・潮（折りたたみ）レンダー
+  // ==========================================================
+  function renderMoon(m, events, tide, weather) {
     const fmt = v => v ? escapeHtml(v) : '—';
+    const phaseEmoji = (m.phase || '').match(/[🌑🌒🌓🌔🌕🌖🌗🌘]/)?.[0] || '🌙';
+    const weatherIcon = weather ? cloudIcon(weather.cloud_pct) : '';
+    const preview = weather
+      ? `${phaseEmoji} 月齢 ${escapeHtml(m.age)} · ${weatherIcon} ${escapeHtml(weather.cloud_pct)}%`
+      : `${phaseEmoji} 月齢 ${escapeHtml(m.age)}`;
 
     let eventsRow = '';
     if (events) {
       eventsRow = `
         <div class="sky-grid">
-          <div class="sky-cell"><span class="sky-label">☀ 日の出</span><span class="sky-time">${fmt(events.sunrise)}</span></div>
-          <div class="sky-cell"><span class="sky-label">日の入</span><span class="sky-time">${fmt(events.sunset)}</span></div>
-          <div class="sky-cell"><span class="sky-label">🌙 月の出</span><span class="sky-time">${fmt(events.moonrise)}</span></div>
-          <div class="sky-cell"><span class="sky-label">月の入</span><span class="sky-time">${fmt(events.moonset)}</span></div>
-          <div class="sky-cell"><span class="sky-label">🌌 薄明</span><span class="sky-time">${fmt(events.twilight_start)} → ${fmt(events.twilight_end)}</span></div>
+          <div class="sky-cell"><span class="sky-label">☀ SUNRISE</span><span class="sky-time">${fmt(events.sunrise)}</span></div>
+          <div class="sky-cell"><span class="sky-label">SUNSET</span><span class="sky-time">${fmt(events.sunset)}</span></div>
+          <div class="sky-cell"><span class="sky-label">🌙 MOONRISE</span><span class="sky-time">${fmt(events.moonrise)}</span></div>
+          <div class="sky-cell"><span class="sky-label">MOONSET</span><span class="sky-time">${fmt(events.moonset)}</span></div>
+          <div class="sky-cell"><span class="sky-label">🌌 TWILIGHT</span><span class="sky-time">${fmt(events.twilight_start)} 〜 ${fmt(events.twilight_end)}</span></div>
+        </div>
+      `;
+    }
+
+    let weatherRow = '';
+    if (weather) {
+      const rangeNote = (weather.cloud_pct_min !== undefined && weather.cloud_pct_max !== undefined
+        && weather.cloud_pct_max > weather.cloud_pct_min)
+        ? `<span class="weather-range">${escapeHtml(weather.cloud_pct_min)}〜${escapeHtml(weather.cloud_pct_max)}%</span>`
+        : '';
+      weatherRow = `
+        <div class="weather-block">
+          <div class="weather-line">
+            <span class="weather-icon" aria-hidden="true">${weatherIcon}</span>
+            <span class="weather-state">${escapeHtml(weather.state_jp)}</span>
+            <span class="weather-cloud">雲量 ${escapeHtml(weather.cloud_pct)}%</span>
+          </div>
+          <div class="weather-note">${escapeHtml(weather.note)} ${rangeNote}</div>
         </div>
       `;
     }
 
     let tideRow = '';
     if (tide && (tide.highs.length || tide.lows.length)) {
-      const highs = tide.highs.map(h => `<li>満潮 ${escapeHtml(h.time)} <span class="tide-cm">${escapeHtml(h.cm)}cm</span></li>`).join('');
-      const lows = tide.lows.map(l => `<li>干潮 ${escapeHtml(l.time)} <span class="tide-cm">${escapeHtml(l.cm)}cm</span></li>`).join('');
+      const highs = tide.highs.map(h => `<li><span class="tide-kind">満潮</span><span class="tide-time">${escapeHtml(h.time)}</span><span class="tide-cm">${escapeHtml(h.cm)} cm</span></li>`).join('');
+      const lows  = tide.lows.map(l  => `<li><span class="tide-kind">干潮</span><span class="tide-time">${escapeHtml(l.time)}</span><span class="tide-cm">${escapeHtml(l.cm)} cm</span></li>`).join('');
       tideRow = `
         <div class="tide-block">
           <ul class="tide-list">${highs}${lows}</ul>
@@ -648,9 +1081,10 @@
 
     return `
       <div class="moon-info">
-        <button class="moon-toggle" aria-expanded="false">今夜の月・空・潮</button>
-        <div class="moon-detail">
+        <button class="moon-toggle" aria-expanded="false" aria-controls="moon-detail-panel">今夜の月・空・潮<span class="moon-toggle-preview">${preview}</span></button>
+        <div class="moon-detail" id="moon-detail-panel">
           ${eventsRow}
+          ${weatherRow}
           <div class="moon-summary">
             <div class="moon-phase">${escapeHtml(m.phase)}</div>
             <div class="moon-meta">月齢 ${escapeHtml(m.age)}　${escapeHtml(m.tide_type)}</div>
@@ -662,6 +1096,18 @@
     `;
   }
 
+  function cloudIcon(pct) {
+    if (pct == null) return '';
+    if (pct < 15) return '☀️';
+    if (pct < 35) return '🌤️';
+    if (pct < 65) return '⛅';
+    if (pct < 85) return '🌥️';
+    return '☁️';
+  }
+
+  // ==========================================================
+  // メインロード
+  // ==========================================================
   async function load() {
     const el = document.getElementById('content');
     try {
@@ -674,13 +1120,16 @@
       }
 
       let html = '';
+      // 最上位に観測インデックスを常時表示
+      html += renderObservationIndex(d);
+
       if (d.visible && d.result) {
-        html = renderVisible(d);
+        html += renderVisible(d);
       } else {
-        html = renderNotVisible(d);
+        html += renderNotVisible(d);
       }
       if (d.moon) {
-        html += renderMoon(d.moon, d.events, d.tide);
+        html += renderMoon(d.moon, d.events, d.tide, d.weather);
       }
 
       el.style.opacity = '0';
@@ -691,7 +1140,7 @@
           startCountdown(d.result.time_iso);
         }
         attachMoonToggle();
-      }, 200);
+      }, 250);
 
     } catch (e) {
       el.innerHTML = '<div class="error"><div class="status">データの取得に失敗しました</div></div>';
@@ -700,7 +1149,7 @@
 
   document.addEventListener('DOMContentLoaded', load);
 
-  // ---------- Service Worker ----------
+  // Service Worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }

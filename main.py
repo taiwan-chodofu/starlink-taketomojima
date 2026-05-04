@@ -23,6 +23,7 @@ import json
 import math
 
 from tide import get_tide_info
+from weather import get_weather_for_window
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,8 +72,8 @@ TLE_FILE_CACHE_HOURS = 24
 
 # --- 可視判定パラメータ ---
 MIN_ALT_DEG = 30.0
-OBS_START_HOUR = 18
-OBS_END_HOUR = 21
+OBS_START_HOUR = 18              # 18:00 JST 開始
+OBS_DURATION_HOURS = 8           # 8時間観測 = 翌 02:00 JST まで
 TRAIN_CLUSTER_THRESHOLD = 3
 TRAIN_TIME_WINDOW_SEC = 300
 TRAIN_AZ_TOLERANCE_DEG = 30.0
@@ -426,6 +427,7 @@ def calc_visibility_score(
     train_summary: dict,
     moon_info: dict,
     obs_start: datetime,
+    weather: dict | None = None,
 ) -> int:
     """
     トレインの"見えやすさ"を0〜100で返す統合スコア。
@@ -433,6 +435,7 @@ def calc_visibility_score(
     - 平均高度: 高いほど良い（30°〜90°を線形にスケール）
     - 月の明るさ: 照度が低いほど良い、かつ月が沈んでいれば加点
     - 日没経過: 日没直後の薄明中盤がピーク
+    - 雲量（あれば）: 少ないほど良い。全体スコアに乗じる（0.3〜1.0倍）
     """
     score = 0.0
 
@@ -448,11 +451,10 @@ def calc_visibility_score(
     # 月の影響: 最大20点（月が暗い/沈んでいるほど良い）
     illumination = moon_info.get("illumination", 50.0)
     moon_alt = moon_info.get("moon_alt", 0.0)
-    moon_penalty = (illumination / 100.0) if moon_alt > 0 else 0.2  # 沈んでれば軽微
+    moon_penalty = (illumination / 100.0) if moon_alt > 0 else 0.2
     score += (1.0 - moon_penalty) * 20
 
     # 薄明適性: 最大10点（日没から30〜90分後がピーク）
-    # 簡略: obs_start が 18:30-20:00 なら満点、それ以外は漸減
     hour = obs_start.hour + obs_start.minute / 60.0
     if 18.5 <= hour <= 20.0:
         twilight_bonus = 1.0
@@ -462,7 +464,252 @@ def calc_visibility_score(
         twilight_bonus = 0.4
     score += twilight_bonus * 10
 
+    # 雲量: スコア全体に乗じる倍率 0.3〜1.0
+    if weather and weather.get("cloud_pct") is not None:
+        cloud_pct = float(weather["cloud_pct"])
+        # 0%:1.0, 50%:0.65, 100%:0.3 の線形
+        cloud_factor = max(0.3, 1.0 - cloud_pct / 100.0 * 0.7)
+        score *= cloud_factor
+
     return max(0, min(100, int(round(score))))
+
+
+# --- 不可視理由の診断 ---
+def diagnose_not_visible(
+    moon_info: dict,
+    events: dict,
+    trains_count: int,
+    weather: dict | None = None,
+) -> dict:
+    """なぜ今夜見えないかを診断し、理由と短い説明を返す。
+
+    優先順位:
+      1. 天候不良（雲量>80%）
+      2. 月明かり強い（illumination>70 かつ 地平線上）
+      3. 衛星軌道ズレ（trains_count=0）
+      4. 満月に近い（70>=illumination>=40 かつ 地平線上）
+      5. 雲が多め（雲量50-80%）
+      6. 薄明時間帯が短い or ズレている
+      7. 判定不能（デフォルト）
+    """
+    cloud_pct = (weather or {}).get("cloud_pct")
+    illumination = moon_info.get("illumination", 0)
+    moon_alt = moon_info.get("moon_alt", 0)
+    moon_is_bright = moon_alt > 0 and illumination > 70
+
+    # 1. 天候不良（最優先）
+    if cloud_pct is not None and cloud_pct >= 80:
+        return {
+            "code": "weather_bad",
+            "icon": "☁️",
+            "title": "雲が空を覆っています",
+            "detail": f"雲量 {int(cloud_pct)}%。"
+                      "衛星が空を通っても、雲に隠れて見えにくい夜です。",
+        }
+
+    # 2. 月明かり強い
+    if moon_is_bright:
+        return {
+            "code": "moon_bright",
+            "icon": "🌕",
+            "title": "月が明るすぎます",
+            "detail": f"月齢 {moon_info.get('age', '?')}・輝面比 {int(illumination)}%。"
+                      "薄明中の衛星は月光に紛れて見えにくい時期です。",
+        }
+
+    # 3. 衛星軌道が合わない
+    if trains_count == 0:
+        return {
+            "code": "no_train_pass",
+            "icon": "🛰️",
+            "title": "今夜の軌道に候補がありません",
+            "detail": "スターリンクのトレインは打ち上げ直後に密に連なって見えます。"
+                      "今夜は西桟橋の空を通る新しい群れが無い日でした。",
+        }
+
+    # 4. 満月に近い（中程度の月光）
+    if moon_alt > 0 and illumination >= 40:
+        return {
+            "code": "moon_medium",
+            "icon": "🌔",
+            "title": "月明かりが残っています",
+            "detail": f"輝面比 {int(illumination)}%。細い衛星の光は見えにくい夜です。"
+                      "新月期まで待つと条件が整います。",
+        }
+
+    # 5. 雲が多め
+    if cloud_pct is not None and cloud_pct >= 50:
+        return {
+            "code": "weather_cloudy",
+            "icon": "🌥️",
+            "title": "雲が多めです",
+            "detail": f"雲量 {int(cloud_pct)}%。"
+                      "雲の切れ間から見える可能性はありますが、条件は厳しめです。",
+        }
+
+    # 6. 薄明時間帯がズレている
+    twilight_start = events.get("twilight_start")
+    twilight_end = events.get("twilight_end")
+    if not twilight_start or not twilight_end:
+        return {
+            "code": "twilight_anomaly",
+            "icon": "🌌",
+            "title": "薄明時間が観測窓と合いません",
+            "detail": "日没後の薄明と観測時間(18時〜翌02時)が一致しない季節のようです。",
+        }
+
+    # 7. それ以外
+    return {
+        "code": "unknown",
+        "icon": "🌠",
+        "title": "今夜は条件が整いません",
+        "detail": "衛星・月・薄明の組み合わせで、今夜は見えにくい夜でした。",
+    }
+
+
+# --- 観測しやすさインデックス（0-100） ---
+def compute_observation_index(
+    all_trains: list[dict],
+    moon_info: dict,
+    events: dict,
+    weather: dict | None,
+    obs_start: datetime,
+    obs_end: datetime,
+) -> dict:
+    """
+    今夜の"観測しやすさ"を0-100で返し、ベスト時間帯と推奨方向を提示する。
+
+    トレインが見つからなくても、**必ず**時間と方角を返す（西桟橋でダメ元で
+    空を見上げるための手がかり）。
+
+    スコア構成:
+      - 衛星条件（最大50点）: 可視トレインの最高スコアを0.5倍
+      - 薄明条件（最大25点）: 薄明時間が観測窓内にあるか
+      - 月条件  （最大15点）: 月の明るさ・位置（暗いほど高得点）
+      - 雲条件  （最大10点）: 雲量が少ないほど高得点（あれば）
+
+    戻り値: {
+      "score": 0-100,
+      "grade_jp": "好条件" | "まずまず" | "厳しめ" | "ダメ元",
+      "best_time_start": "HH:MM",
+      "best_time_end": "HH:MM",
+      "best_direction": "南西",
+      "advice": "一言アドバイス",
+      "has_train": bool,
+    }
+    """
+    score = 0.0
+    has_train = bool(all_trains)
+
+    # 衛星条件: 最大50点（トレインがあれば最高スコア、なければ0）
+    if all_trains:
+        best_train_score = max(t.get("score", 0) for t in all_trains)
+        score += best_train_score * 0.5
+
+    # 薄明条件: 最大25点
+    twilight_start = events.get("twilight_start") if events else None
+    twilight_end = events.get("twilight_end") if events else None
+    if twilight_start and twilight_end:
+        score += 25
+
+    # 月条件: 最大15点
+    illumination = moon_info.get("illumination", 50) if moon_info else 50
+    moon_alt = moon_info.get("moon_alt", 0) if moon_info else 0
+    if moon_alt <= 0:
+        score += 15  # 月が沈んでいれば満点
+    else:
+        score += 15 * (1.0 - illumination / 100.0)
+
+    # 雲条件: 最大10点
+    if weather and weather.get("cloud_pct") is not None:
+        cloud_pct = float(weather["cloud_pct"])
+        score += 10 * (1.0 - cloud_pct / 100.0)
+    else:
+        score += 5  # 不明なら中間値
+
+    score_int = max(0, min(100, int(round(score))))
+
+    # 評価ラベル
+    if score_int >= 70:
+        grade_jp = "好条件"
+    elif score_int >= 45:
+        grade_jp = "まずまず"
+    elif score_int >= 25:
+        grade_jp = "厳しめ"
+    else:
+        grade_jp = "ダメ元"
+
+    # ベスト時間帯と方向
+    best_time_start, best_time_end, best_direction, advice = _compute_best_window(
+        all_trains, twilight_start, twilight_end, obs_start, obs_end,
+        moon_info, weather,
+    )
+
+    return {
+        "score": score_int,
+        "grade_jp": grade_jp,
+        "best_time_start": best_time_start,
+        "best_time_end": best_time_end,
+        "best_direction": best_direction,
+        "advice": advice,
+        "has_train": has_train,
+    }
+
+
+def _compute_best_window(
+    all_trains: list[dict],
+    twilight_start: str | None,
+    twilight_end: str | None,
+    obs_start: datetime,
+    obs_end: datetime,
+    moon_info: dict | None,
+    weather: dict | None,
+) -> tuple[str, str, str, str]:
+    """ベスト時間帯・方向・一言アドバイスを返す。
+
+    優先順位:
+      1. 可視トレインあり → その時刻 ±15分・方向を使う
+      2. トレインなし → 薄明時間帯を使う + 月の出ていない東/西を推奨
+      3. 全て不明 → 観測窓全体と「南の空」（開けた海の方向）
+    """
+    # 1. トレインがあればそれ優先
+    if all_trains:
+        best = all_trains[0]
+        time_str = best.get("time_str", "")
+        try:
+            h, m = map(int, time_str.split(":"))
+            start_min = max(0, h * 60 + m - 15)
+            end_min = min(24 * 60 - 1, h * 60 + m + 15)
+            start = f"{start_min // 60:02d}:{start_min % 60:02d}"
+            end = f"{end_min // 60:02d}:{end_min % 60:02d}"
+        except Exception:
+            start, end = time_str, time_str
+        direction = f"{best.get('start_dir', '')} → {best.get('end_dir', '')}"
+        advice = "スターリンクが通る時刻です。空を広く見上げて"
+        return start, end, direction, advice
+
+    # 2. トレインなし：薄明時間を推奨
+    if twilight_start and twilight_end:
+        # 西桟橋は海が南〜西に開ける。月が東にある夜は西、月が西にあれば東を推奨
+        moon_alt = (moon_info or {}).get("moon_alt", 0)
+        if moon_alt > 30:
+            direction = "天頂〜北（月を避けて）"
+        else:
+            direction = "南〜西（海の方角）"
+        cloud_pct = (weather or {}).get("cloud_pct")
+        if cloud_pct is not None and cloud_pct >= 70:
+            advice = "今夜は雲が多めですが、切れ間があれば星空が見えます"
+        else:
+            advice = "スターリンクは見えづらい夜。薄明の星空を楽しんで"
+        return twilight_start, twilight_end, direction, advice
+
+    # 3. それ以外：観測窓全体
+    return (
+        obs_start.strftime("%H:%M"),
+        obs_end.strftime("%H:%M"),
+        "南〜西（海の方角）",
+        "薄明情報が取れない季節です。静かに空を眺めて",
+    )
 
 
 # --- 次回候補・夜空条件 ---
@@ -477,8 +724,7 @@ def find_next_visible(sats_tle, start_date, max_days: int = 7) -> dict | None:
         target = start_date + timedelta(days=day_offset)
         obs_start = datetime(target.year, target.month, target.day,
                              OBS_START_HOUR, 0, tzinfo=JST)
-        obs_end = datetime(target.year, target.month, target.day,
-                           OBS_END_HOUR, 0, tzinfo=JST)
+        obs_end = obs_start + timedelta(hours=OBS_DURATION_HOURS)
         passes = find_train_passes_relaxed(sats_tle, obs_start, obs_end)
         trains = cluster_into_trains(passes)
         best = select_best_train(trains)
@@ -632,13 +878,15 @@ def get_sun_moon_events(target_date: date_type) -> dict:
 
 # --- エンドポイント ---
 def _compute_observation_window() -> tuple[datetime, datetime, bool]:
-    """今夜の観測窓を返す。既に過ぎていれば翌日にシフト。"""
+    """今夜の観測窓を返す。既に過ぎていれば翌日にシフト。
+
+    観測窓は OBS_START_HOUR から OBS_DURATION_HOURS 時間継続（例: 18:00 → 翌02:00）。
+    """
     now = datetime.now(tz=JST)
     today = now.date()
     obs_start = datetime(today.year, today.month, today.day,
                          OBS_START_HOUR, 0, tzinfo=JST)
-    obs_end = datetime(today.year, today.month, today.day,
-                       OBS_END_HOUR, 0, tzinfo=JST)
+    obs_end = obs_start + timedelta(hours=OBS_DURATION_HOURS)
     shifted = False
     if now > obs_end:
         obs_start += timedelta(days=1)
@@ -671,21 +919,30 @@ async def api_tonight():
         moon = get_moon_info(target_date)
         events = get_sun_moon_events(target_date)
         tide = await get_tide_info(target_date)
+        weather = await get_weather_for_window(obs_start, obs_end)
 
         # 複数候補提示 + 可視スコア
         all_trains = select_trains(trains, top_n=3)
         for t in all_trains:
-            t["score"] = calc_visibility_score(t, moon, obs_start)
+            t["score"] = calc_visibility_score(t, moon, obs_start, weather)
         # プライマリ候補は最高スコアのもの
         result = all_trains[0] if all_trains else None
 
+        # 不可視時の理由診断
+        reason = None
         next_visible = None
         next_dark_sky = None
         if not result:
+            reason = diagnose_not_visible(moon, events, len(all_trains), weather)
             tomorrow = obs_start.date() + timedelta(days=1)
             next_visible = find_next_visible(candidates, tomorrow, max_days=7)
             if not next_visible:
                 next_dark_sky = find_next_dark_sky(tomorrow, max_days=30)
+
+        # 観測しやすさインデックス（常に算出）
+        observation_index = compute_observation_index(
+            all_trains, moon, events, weather, obs_start, obs_end,
+        )
     except Exception as e:
         logger.error("判定エラー: %s", e)
         return JSONResponse({"error": "衛星データの取得に失敗しました"})
@@ -694,11 +951,14 @@ async def api_tonight():
         "visible": result is not None,
         "result": result,
         "all_trains": all_trains,
+        "observation_index": observation_index,
+        "reason": reason,
         "next_visible": next_visible,
         "next_dark_sky": next_dark_sky,
         "moon": moon,
         "events": events,
         "tide": tide,
+        "weather": weather,
         "obs_window": {
             "start": obs_start.isoformat(),
             "end": obs_end.isoformat(),
