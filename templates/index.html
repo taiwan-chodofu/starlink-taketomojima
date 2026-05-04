@@ -160,6 +160,73 @@
     min-height: 1rem;
   }
 
+  /* 可視スコア（0-100） */
+  .score-bar {
+    width: 60%;
+    max-width: 14rem;
+    height: 2px;
+    background: var(--ink-10);
+    margin: 0 auto 0.6rem;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .score-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--ink-40), var(--ink-100));
+    transition: width 1.2s ease-out;
+  }
+  .score-label {
+    font-size: 0.7rem;
+    color: var(--ink-40);
+    letter-spacing: 0.2em;
+    margin-bottom: 2.4rem;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "tnum";
+  }
+  .score-unit {
+    color: var(--ink-20);
+    margin-left: 0.2rem;
+  }
+
+  /* 他の候補 */
+  .others {
+    margin-top: 3.5rem;
+    padding-top: 1.8rem;
+    border-top: 1px solid var(--hairline);
+    text-align: left;
+    max-width: 20rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .others-label {
+    font-size: 0.7rem;
+    color: var(--ink-40);
+    letter-spacing: 0.3em;
+    margin-bottom: 0.8rem;
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  .other-row {
+    display: grid;
+    grid-template-columns: 3rem 1fr auto auto;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
+    font-size: 0.8rem;
+    color: var(--ink-60);
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "tnum";
+    align-items: baseline;
+  }
+  .other-time { color: var(--ink-80); }
+  .other-dir  { font-size: 0.75rem; color: var(--ink-60); }
+  .other-count { font-size: 0.7rem; color: var(--ink-40); }
+  .other-score {
+    font-size: 0.75rem;
+    color: var(--ink-60);
+    min-width: 1.6rem;
+    text-align: right;
+  }
+
   .visible .direction {
     font-size: 1.15rem;
     line-height: 2;
@@ -293,6 +360,78 @@
     letter-spacing: 0.1em;
   }
 
+  /* ------- 空と潮の時刻グリッド ------- */
+  .sky-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem 1.2rem;
+    margin-bottom: 1.2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .sky-grid .sky-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  .sky-grid .sky-cell:last-child {
+    grid-column: span 2;
+  }
+  .sky-label {
+    font-size: 0.65rem;
+    color: var(--ink-40);
+    letter-spacing: 0.15em;
+    margin-bottom: 0.2rem;
+  }
+  .sky-time {
+    font-size: 0.95rem;
+    color: var(--ink-80);
+    font-feature-settings: "tnum";
+  }
+
+  .moon-summary {
+    padding-bottom: 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .tide-block {
+    text-align: left;
+    padding-left: 0.8rem;
+  }
+  .tide-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 0.5rem 0;
+    font-size: 0.8rem;
+    color: var(--ink-60);
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "tnum";
+  }
+  .tide-list li {
+    padding: 0.15rem 0;
+    display: flex;
+    justify-content: space-between;
+    max-width: 14rem;
+    margin: 0 auto;
+  }
+  .tide-cm {
+    color: var(--ink-40);
+    font-size: 0.75rem;
+  }
+  .tide-note {
+    font-size: 0.65rem;
+    color: var(--ink-40);
+    letter-spacing: 0.1em;
+    text-align: center;
+    margin-top: 0.5rem;
+  }
+
+  .moon-detail.open {
+    max-height: 32rem;
+  }
+
   /* ------- エラー ------- */
   .error .status {
     font-size: 0.95rem;
@@ -415,11 +554,31 @@
 
   function renderVisible(d) {
     const s = d.result;
+    const others = (d.all_trains || []).slice(1);
+    const scoreBar = (s.score !== undefined)
+      ? `<div class="score-bar" aria-label="可視スコア ${s.score}/100"><div class="score-fill" style="width:${s.score}%"></div></div>
+         <div class="score-label">見やすさ ${s.score}<span class="score-unit">/100</span></div>`
+      : '';
+
+    const othersHtml = others.length > 0
+      ? `<div class="others">
+           <div class="others-label">他の候補</div>
+           ${others.map(o => `
+             <div class="other-row">
+               <span class="other-time">${escapeHtml(o.time_str)}</span>
+               <span class="other-dir">${escapeHtml(o.start_dir)} → ${escapeHtml(o.end_dir)}</span>
+               <span class="other-count">${escapeHtml(o.sat_count)}機</span>
+               ${o.score !== undefined ? `<span class="other-score">${escapeHtml(o.score)}</span>` : ''}
+             </div>`).join('')}
+         </div>`
+      : '';
+
     return `
       <div class="visible">
         <div class="status">今夜はスターリンクが<br>西桟橋から見えるかもしれません</div>
         <div class="time">${escapeHtml(s.time_str)}</div>
         <div class="countdown" id="countdown">—</div>
+        ${scoreBar}
         <div class="direction">
           ${escapeHtml(s.start_dir)}
           <span class="context">（${escapeHtml(s.start_context)}）</span>
@@ -430,6 +589,7 @@
         </div>
         <div class="direction">${escapeHtml(s.end_dir)} へ流れる</div>
         <div class="count">約 ${escapeHtml(s.sat_count)} 機の連なり</div>
+        ${othersHtml}
       </div>
     `;
   }
@@ -458,14 +618,45 @@
     return html;
   }
 
-  function renderMoon(m) {
+  function renderMoon(m, events, tide) {
+    const fmt = v => v ? escapeHtml(v) : '—';
+
+    let eventsRow = '';
+    if (events) {
+      eventsRow = `
+        <div class="sky-grid">
+          <div class="sky-cell"><span class="sky-label">☀ 日の出</span><span class="sky-time">${fmt(events.sunrise)}</span></div>
+          <div class="sky-cell"><span class="sky-label">日の入</span><span class="sky-time">${fmt(events.sunset)}</span></div>
+          <div class="sky-cell"><span class="sky-label">🌙 月の出</span><span class="sky-time">${fmt(events.moonrise)}</span></div>
+          <div class="sky-cell"><span class="sky-label">月の入</span><span class="sky-time">${fmt(events.moonset)}</span></div>
+          <div class="sky-cell"><span class="sky-label">🌌 薄明</span><span class="sky-time">${fmt(events.twilight_start)} → ${fmt(events.twilight_end)}</span></div>
+        </div>
+      `;
+    }
+
+    let tideRow = '';
+    if (tide && (tide.highs.length || tide.lows.length)) {
+      const highs = tide.highs.map(h => `<li>満潮 ${escapeHtml(h.time)} <span class="tide-cm">${escapeHtml(h.cm)}cm</span></li>`).join('');
+      const lows = tide.lows.map(l => `<li>干潮 ${escapeHtml(l.time)} <span class="tide-cm">${escapeHtml(l.cm)}cm</span></li>`).join('');
+      tideRow = `
+        <div class="tide-block">
+          <ul class="tide-list">${highs}${lows}</ul>
+          <div class="tide-note">${escapeHtml(tide.datum_note)}</div>
+        </div>
+      `;
+    }
+
     return `
       <div class="moon-info">
-        <button class="moon-toggle" aria-expanded="false">今夜の月と潮</button>
+        <button class="moon-toggle" aria-expanded="false">今夜の月・空・潮</button>
         <div class="moon-detail">
-          <div class="moon-phase">${escapeHtml(m.phase)}</div>
-          <div class="moon-meta">月齢 ${escapeHtml(m.age)}　${escapeHtml(m.tide_type)}</div>
-          <div class="moon-note">${escapeHtml(m.sky_note)}</div>
+          ${eventsRow}
+          <div class="moon-summary">
+            <div class="moon-phase">${escapeHtml(m.phase)}</div>
+            <div class="moon-meta">月齢 ${escapeHtml(m.age)}　${escapeHtml(m.tide_type)}</div>
+            <div class="moon-note">${escapeHtml(m.sky_note)}</div>
+          </div>
+          ${tideRow}
         </div>
       </div>
     `;
@@ -489,7 +680,7 @@
         html = renderNotVisible(d);
       }
       if (d.moon) {
-        html += renderMoon(d.moon);
+        html += renderMoon(d.moon, d.events, d.tide);
       }
 
       el.style.opacity = '0';

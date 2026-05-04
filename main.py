@@ -14,13 +14,15 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from skyfield.api import load, EarthSatellite, wgs84
 from skyfield import almanac
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date as date_type
 from contextlib import asynccontextmanager
 from pathlib import Path
 import httpx
 import logging
 import json
 import math
+
+from tide import get_tide_info
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,10 +57,13 @@ OBSERVER = wgs84.latlon(LAT, LON)
 JST = timezone(timedelta(hours=9))
 
 # --- TLEソース（多重フォールバック） ---
+# Celestrak全量（約10,000機）は理想だが 403 Forbidden/rate-limit が頻発するため
+# 人気順API（ivanstanojevic）を主に使い、Celestrakは補助扱いにする。
+# page-size=200 は人気順上位の"新しい打ち上げ＋運用中の主要機"を網羅できる実用的な上限。
 TLE_URLS = [
-    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page-size=100&sort=popularity&sort-dir=desc",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page-size=100&sort=popularity&sort-dir=desc&page=1",
+    "https://tle.ivanstanojevic.me/api/tle/?search=starlink&page-size=100&sort=popularity&sort-dir=desc&page=2",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
-    "https://celestrak.org/NORAD/elements/supplemental/starlink.txt",
 ]
 TLE_CACHE_FILE = _here / "tle_cache.json"
 TLE_MEM_CACHE_MINUTES = 120
@@ -73,7 +78,15 @@ TRAIN_TIME_WINDOW_SEC = 300
 TRAIN_AZ_TOLERANCE_DEG = 30.0
 SCAN_INTERVAL_MIN = 5
 NEXT_SCAN_INTERVAL_MIN = 10
-MAX_SATS = 200
+
+# --- Deployed/Not-deployed 判別 ---
+# Starlink は運用軌道 550km 前後、展開前の低軌道 210-350km が "train" として見やすい。
+# TLE の平均運動 (mean motion, rev/day) から近似高度を算出:
+#   a = (mu / n^2)^(1/3),  h = a - R_earth
+# 運用軌道かつ新しめの衛星を含めた幅広なフィルタ閾値:
+TRAIN_ALT_MIN_KM = 200.0
+TRAIN_ALT_MAX_KM = 600.0
+MAX_SATS_AFTER_FILTER = 1500   # 軌道フィルタ後の上限（それでも多ければ直近のものに絞る）
 
 # --- Skyfield リソース ---
 ts = load.timescale()
@@ -120,7 +133,12 @@ def _load_file_cache() -> list[tuple[str, str, str]] | None:
 
 
 def _save_file_cache(sats: list[tuple[str, str, str]]) -> None:
+    """TLEデータをファイルキャッシュに保存。ただし既存キャッシュよりサンプルが少なければ保存しない。"""
     try:
+        existing = _load_file_cache()
+        if existing is not None and len(existing) > len(sats) * 5:
+            logger.info("既存キャッシュの方が大量（%d → %d）、上書きスキップ", len(existing), len(sats))
+            return
         data = {"fetched_at": datetime.now(tz=JST).isoformat(), "sats": sats}
         TLE_CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         logger.info("ファイルキャッシュ保存: %d衛星", len(sats))
@@ -165,22 +183,45 @@ async def fetch_tle_data() -> list[tuple[str, str, str]]:
     ):
         return _tle_cache["data"]
 
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; StarlinkNishi/2.0)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/plain,application/json,*/*",
+    }
     async with httpx.AsyncClient(timeout=60.0, headers=headers, follow_redirects=True) as client:
+        # ivanstanojevic のページングを優先: page=1 と page=2 の両方を取って連結（最大200機）
+        accumulated: list[tuple[str, str, str]] = []
+        seen_names: set[str] = set()
         for url in TLE_URLS:
             try:
                 logger.info("TLE取得試行: %s", url)
                 resp = await client.get(url)
                 resp.raise_for_status()
                 sats = _parse_tle_response(resp.text, url)
-                if sats:
-                    _tle_cache["data"] = sats
-                    _tle_cache["fetched_at"] = now
-                    _save_file_cache(sats)
-                    logger.info("TLE取得成功: %d衛星", len(sats))
-                    return sats
+                if not sats:
+                    continue
+                # ivanstanojevic はページング用なので重複除去しつつ蓄積
+                if "ivanstanojevic" in url:
+                    for s in sats:
+                        if s[0] not in seen_names:
+                            accumulated.append(s)
+                            seen_names.add(s[0])
+                    continue
+                # Celestrak 等の全量ソースで成功した場合はそちらを優先して即return
+                _tle_cache["data"] = sats
+                _tle_cache["fetched_at"] = now
+                _save_file_cache(sats)
+                logger.info("TLE取得成功(全量ソース): %d衛星", len(sats))
+                return sats
             except Exception as e:
                 logger.warning("TLE取得失敗(%s): %s", url, e)
+
+        # ivanstanojevic の累積結果を使う（2ページ連結 = 最大200機）
+        if accumulated:
+            _tle_cache["data"] = accumulated
+            _tle_cache["fetched_at"] = now
+            _save_file_cache(accumulated)
+            logger.info("TLE取得成功(ページング連結): %d衛星", len(accumulated))
+            return accumulated
 
     logger.info("ネットワーク失敗、ファイルキャッシュを試行")
     cached = _load_file_cache()
@@ -190,6 +231,60 @@ async def fetch_tle_data() -> list[tuple[str, str, str]]:
         return cached
 
     raise RuntimeError("TLEデータを取得できません")
+
+
+# --- 軌道高度フィルタ（Deployed/Not-deployed 判別） ---
+# 地球重力定数 mu = GM_earth [km^3 / s^2]、地球赤道半径 R_earth [km]
+_MU_EARTH = 398600.4418
+_R_EARTH = 6378.137
+
+
+def _mean_motion_to_altitude_km(mean_motion_rev_per_day: float) -> float:
+    """平均運動（rev/day）から軌道長半径 → 平均高度を近似計算する。"""
+    # n [rad/s] = mean_motion * 2π / 86400
+    n_rad_s = mean_motion_rev_per_day * 2.0 * math.pi / 86400.0
+    if n_rad_s <= 0:
+        return 0.0
+    # 軌道長半径 a [km]: n^2 * a^3 = mu → a = (mu / n^2)^(1/3)
+    a_km = (_MU_EARTH / (n_rad_s * n_rad_s)) ** (1.0 / 3.0)
+    return a_km - _R_EARTH
+
+
+def _tle_line2_mean_motion(line2: str) -> float | None:
+    """TLE 2行目から平均運動（rev/day）を抽出する。"""
+    # TLE Line 2 のカラム 53-63（1-indexed）が mean motion
+    # Python slice: [52:63]
+    if len(line2) < 63:
+        return None
+    try:
+        return float(line2[52:63].strip())
+    except ValueError:
+        return None
+
+
+def filter_train_candidates(
+    sats: list[tuple[str, str, str]],
+    alt_min: float = TRAIN_ALT_MIN_KM,
+    alt_max: float = TRAIN_ALT_MAX_KM,
+    max_count: int = MAX_SATS_AFTER_FILTER,
+) -> list[tuple[str, str, str]]:
+    """TLE 2行目の平均運動から平均高度を計算し、トレイン候補の軌道にある衛星に絞る。
+
+    alt_min〜alt_max の範囲にある衛星のみを返す。
+    max_count を超えた場合は末尾から優先（リスト末尾が新しい打ち上げであることが多い）。
+    """
+    candidates: list[tuple[str, str, str]] = []
+    for name, l1, l2 in sats:
+        mm = _tle_line2_mean_motion(l2)
+        if mm is None:
+            continue
+        alt = _mean_motion_to_altitude_km(mm)
+        if alt_min <= alt <= alt_max:
+            candidates.append((name, l1, l2))
+    if len(candidates) > max_count:
+        candidates = candidates[-max_count:]
+    logger.info("軌道高度フィルタ: %d → %d衛星", len(sats), len(candidates))
+    return candidates
 
 
 # --- 薄明・パス計算 ---
@@ -296,15 +391,78 @@ def select_best_train(trains: list[list[dict]]) -> dict | None:
     if not trains:
         return None
     best = max(trains, key=lambda t: (len(t), sum(p["alt"] for p in t) / len(t)))
-    mid = best[len(best) // 2]
+    return summarize_train(best)
+
+
+def summarize_train(train: list[dict]) -> dict:
+    """1トレインを表示用dictに変換する。"""
+    mid = train[len(train) // 2]
+    avg_alt = sum(p["alt"] for p in train) / len(train)
     return {
         "time_str": mid["time"].strftime("%H:%M"),
         "time_iso": mid["time"].isoformat(),
-        "start_dir": az_to_direction(best[0]["az"]),
-        "end_dir": az_to_direction(best[-1]["az"]),
-        "start_context": az_to_context(best[0]["az"]),
-        "sat_count": len(best),
+        "start_dir": az_to_direction(train[0]["az"]),
+        "end_dir": az_to_direction(train[-1]["az"]),
+        "start_context": az_to_context(train[0]["az"]),
+        "sat_count": len(train),
+        "avg_alt": round(avg_alt, 1),
     }
+
+
+def select_trains(trains: list[list[dict]], top_n: int = 3) -> list[dict]:
+    """上位N個のトレインを表示用dictで返す。衛星数×平均高度でランキング。"""
+    if not trains:
+        return []
+    ranked = sorted(
+        trains,
+        key=lambda t: (len(t), sum(p["alt"] for p in t) / len(t)),
+        reverse=True,
+    )
+    return [summarize_train(t) for t in ranked[:top_n]]
+
+
+# --- B5: 統合可視スコア（0-100） ---
+def calc_visibility_score(
+    train_summary: dict,
+    moon_info: dict,
+    obs_start: datetime,
+) -> int:
+    """
+    トレインの"見えやすさ"を0〜100で返す統合スコア。
+    - 衛星数: 多いほど良い（上限20機で満点）
+    - 平均高度: 高いほど良い（30°〜90°を線形にスケール）
+    - 月の明るさ: 照度が低いほど良い、かつ月が沈んでいれば加点
+    - 日没経過: 日没直後の薄明中盤がピーク
+    """
+    score = 0.0
+
+    # 衛星数: 最大40点
+    sat_count = train_summary.get("sat_count", 0)
+    score += min(sat_count / 20.0, 1.0) * 40
+
+    # 平均高度: 最大30点
+    avg_alt = train_summary.get("avg_alt", 0.0)
+    alt_norm = max(0.0, min((avg_alt - MIN_ALT_DEG) / (90.0 - MIN_ALT_DEG), 1.0))
+    score += alt_norm * 30
+
+    # 月の影響: 最大20点（月が暗い/沈んでいるほど良い）
+    illumination = moon_info.get("illumination", 50.0)
+    moon_alt = moon_info.get("moon_alt", 0.0)
+    moon_penalty = (illumination / 100.0) if moon_alt > 0 else 0.2  # 沈んでれば軽微
+    score += (1.0 - moon_penalty) * 20
+
+    # 薄明適性: 最大10点（日没から30〜90分後がピーク）
+    # 簡略: obs_start が 18:30-20:00 なら満点、それ以外は漸減
+    hour = obs_start.hour + obs_start.minute / 60.0
+    if 18.5 <= hour <= 20.0:
+        twilight_bonus = 1.0
+    elif 18.0 <= hour <= 20.5:
+        twilight_bonus = 0.7
+    else:
+        twilight_bonus = 0.4
+    score += twilight_bonus * 10
+
+    return max(0, min(100, int(round(score))))
 
 
 # --- 次回候補・夜空条件 ---
@@ -400,6 +558,78 @@ def get_moon_info(target_date) -> dict:
     }
 
 
+# --- 日月イベント（日の出/日の入り/月の出/月の入り/薄明） ---
+def _find_event_time(f, t0, t1, target_value: int) -> str | None:
+    """Skyfield almanac の離散関数 f から、指定値への遷移時刻を'HH:MM'で返す。
+
+    f: Skyfield discrete function (e.g., sunrise_sunset, risings_and_settings)
+    target_value: 1=昇る(sunrise/moonrise)、0=沈む(sunset/moonset)
+    """
+    try:
+        times, events = almanac.find_discrete(t0, t1, f)
+    except Exception:
+        return None
+    for t, e in zip(times, events):
+        if int(e) == target_value:
+            return t.astimezone(JST).strftime("%H:%M")
+    return None
+
+
+def _find_twilight_bounds(t0, t1) -> tuple[str | None, str | None]:
+    """天文薄明（太陽高度 -18°）の開始・終了時刻を返す。
+    対象時間帯内で太陽高度が -18° を横切る最初/最後の時刻を検出。"""
+    try:
+        f = almanac.dark_twilight_day(eph, OBSERVER)
+        times, events = almanac.find_discrete(t0, t1, f)
+    except Exception:
+        return None, None
+
+    twilight_start = None
+    twilight_end = None
+    # イベント値: 0=night, 1=astronomical, 2=nautical, 3=civil, 4=day
+    # 日没後: day → civil → nautical → astronomical → night
+    # 1（astronomical twilight開始）への遷移 = 薄明開始（観測に使える時刻帯）
+    for t, e in zip(times, events):
+        event_val = int(e)
+        if event_val == 3:   # civil twilight 終了 = 観測条件（-6°）の開始
+            twilight_start = t.astimezone(JST).strftime("%H:%M")
+        elif event_val == 1:  # astronomical 終了 = 真の夜（-18°）の開始
+            twilight_end = t.astimezone(JST).strftime("%H:%M")
+    return twilight_start, twilight_end
+
+
+def get_sun_moon_events(target_date: date_type) -> dict:
+    """指定日の日の出/日の入り/月の出/月の入り/薄明開始・終了を返す。"""
+    # その日の00:00〜翌日00:00 JST
+    day_start = datetime(target_date.year, target_date.month, target_date.day,
+                         0, 0, tzinfo=JST)
+    day_end = day_start + timedelta(days=1)
+    t0 = ts.from_datetime(day_start)
+    t1 = ts.from_datetime(day_end)
+
+    # 日の出・日の入り
+    f_sun = almanac.sunrise_sunset(eph, OBSERVER)
+    sunrise = _find_event_time(f_sun, t0, t1, 1)
+    sunset = _find_event_time(f_sun, t0, t1, 0)
+
+    # 月の出・月の入り
+    f_moon = almanac.risings_and_settings(eph, eph['moon'], OBSERVER)
+    moonrise = _find_event_time(f_moon, t0, t1, 1)
+    moonset = _find_event_time(f_moon, t0, t1, 0)
+
+    # 薄明の開始・終了（観測に適した時間帯の境界）
+    twilight_start, twilight_end = _find_twilight_bounds(t0, t1)
+
+    return {
+        "sunrise": sunrise,
+        "sunset": sunset,
+        "moonrise": moonrise,
+        "moonset": moonset,
+        "twilight_start": twilight_start,
+        "twilight_end": twilight_end,
+    }
+
+
 # --- エンドポイント ---
 def _compute_observation_window() -> tuple[datetime, datetime, bool]:
     """今夜の観測窓を返す。既に過ぎていれば翌日にシフト。"""
@@ -433,20 +663,29 @@ async def api_tonight():
     obs_start, obs_end, _ = _compute_observation_window()
     try:
         sats = await fetch_tle_data()
-        recent = sats[-MAX_SATS:] if len(sats) > MAX_SATS else sats
-        passes = find_train_passes(recent, obs_start, obs_end)
+        candidates = filter_train_candidates(sats)
+        passes = find_train_passes(candidates, obs_start, obs_end)
         trains = cluster_into_trains(passes)
-        result = select_best_train(trains)
+
+        target_date = obs_start.date()
+        moon = get_moon_info(target_date)
+        events = get_sun_moon_events(target_date)
+        tide = await get_tide_info(target_date)
+
+        # 複数候補提示 + 可視スコア
+        all_trains = select_trains(trains, top_n=3)
+        for t in all_trains:
+            t["score"] = calc_visibility_score(t, moon, obs_start)
+        # プライマリ候補は最高スコアのもの
+        result = all_trains[0] if all_trains else None
 
         next_visible = None
         next_dark_sky = None
         if not result:
             tomorrow = obs_start.date() + timedelta(days=1)
-            next_visible = find_next_visible(recent, tomorrow, max_days=7)
+            next_visible = find_next_visible(candidates, tomorrow, max_days=7)
             if not next_visible:
                 next_dark_sky = find_next_dark_sky(tomorrow, max_days=30)
-
-        moon = get_moon_info(obs_start.date())
     except Exception as e:
         logger.error("判定エラー: %s", e)
         return JSONResponse({"error": "衛星データの取得に失敗しました"})
@@ -454,9 +693,12 @@ async def api_tonight():
     return {
         "visible": result is not None,
         "result": result,
+        "all_trains": all_trains,
         "next_visible": next_visible,
         "next_dark_sky": next_dark_sky,
         "moon": moon,
+        "events": events,
+        "tide": tide,
         "obs_window": {
             "start": obs_start.isoformat(),
             "end": obs_end.isoformat(),
