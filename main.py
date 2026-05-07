@@ -713,13 +713,32 @@ def _compute_best_window(
 
 
 # --- 次回候補・夜空条件 ---
+_next_visible_cache: dict = {"data": None, "fetched_at": None, "key": None}
+NEXT_VISIBLE_CACHE_MINUTES = 120
+
+
 def _format_month_day(d) -> str:
     """月/日をゼロ埋めなしで返す（Windows/Linux共通）。"""
     return f"{d.month}/{d.day}"
 
 
 def find_next_visible(sats_tle, start_date, max_days: int = 7) -> dict | None:
-    """max_days日分をスキャンし、最初に可視パスが見つかった日を返す。"""
+    """max_days日分をスキャンし、最初に可視パスが見つかった日を返す。
+
+    メモリキャッシュ付き（2時間）。同じstart_date・衛星数なら計算をスキップする。
+    """
+    key = (start_date.isoformat(), len(sats_tle), max_days)
+    now = datetime.now(tz=JST)
+    if (
+        _next_visible_cache["key"] == key
+        and _next_visible_cache["fetched_at"] is not None
+        and (now - _next_visible_cache["fetched_at"]).total_seconds() < NEXT_VISIBLE_CACHE_MINUTES * 60
+    ):
+        logger.info("find_next_visible: キャッシュヒット")
+        return _next_visible_cache["data"]
+
+    logger.info("find_next_visible: %d日分スキャン開始", max_days)
+    result = None
     for day_offset in range(max_days):
         target = start_date + timedelta(days=day_offset)
         obs_start = datetime(target.year, target.month, target.day,
@@ -729,8 +748,14 @@ def find_next_visible(sats_tle, start_date, max_days: int = 7) -> dict | None:
         trains = cluster_into_trains(passes)
         best = select_best_train(trains)
         if best:
-            return {"date": _format_month_day(target), **best}
-    return None
+            result = {"date": _format_month_day(target), **best}
+            break
+
+    _next_visible_cache["data"] = result
+    _next_visible_cache["fetched_at"] = now
+    _next_visible_cache["key"] = key
+    logger.info("find_next_visible: 結果=%s", "found" if result else "none")
+    return result
 
 
 def find_next_dark_sky(start_date, max_days: int = 30) -> dict | None:
